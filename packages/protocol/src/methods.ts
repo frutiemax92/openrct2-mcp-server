@@ -167,6 +167,8 @@ export interface RegionTile {
     r?: number[];
     /** Hauteur max (niveau) des pièces d'attraction sur la tuile. */
     rh?: number;
+    /** Intervalles [base, dégagement] (niveaux) occupés par chaque pièce d'attraction sur la tuile (passerelles : trouver un créneau libre entre deux pièces à des hauteurs différentes). */
+    ri?: [number, number][];
     e?: RegionEntrance[];
     /** Nombre d'éléments de petite scénerie, grande scénerie, murs. */
     sc?: number;

@@ -377,7 +377,15 @@ interface PlacedAccess {
 /** Raccorde entrée (en file d'attente) et sortie au réseau de chemins le plus proche. */
 async function connectEntrances(
     ctx: ToolContext,
-    opts: { entrance: PlacedAccess | null; exit: PlacedAccess | null; avoid: Set<string>; level: number; sandbox: boolean },
+    opts: {
+        entrance: PlacedAccess | null;
+        exit: PlacedAccess | null;
+        avoid: Set<string>;
+        level: number;
+        sandbox: boolean;
+        /** Emprise du circuit : le raccord essaie d'abord de la contourner avant d'accepter de la traverser (entre les poteaux, etc.). */
+        footprint?: { x1: number; y1: number; x2: number; y2: number };
+    },
 ): Promise<{ connections: Record<string, unknown>; placedPaths: PlannedPathTile[]; cost: number }> {
     const connections: Record<string, unknown> = {};
     const placedPaths: PlannedPathTile[] = [];
@@ -388,13 +396,33 @@ async function connectEntrances(
     const connect = async (label: string, from: PlacedAccess, queue: boolean) => {
         const startTile = { x: from.tile.x + DIRECTION_DELTA[from.outward].x, y: from.tile.y + DIRECTION_DELTA[from.outward].y };
         const g = await ctx.cache.region({ x1: startTile.x - 42, y1: startTile.y - 42, x2: startTile.x + 42, y2: startTile.y + 42 });
-        const route = routeToNetwork(startTile, g.get, { sandbox: opts.sandbox, avoid, startLevel: opts.level });
+        let route: PlannedPathTile[] | null = null;
+        if (opts.footprint) {
+            // Essai 1 : contourne l'emprise du circuit (évite de slalomer entre les poteaux, invisibles du serveur).
+            const outsideAvoid = new Set(avoid);
+            const startKey = tileKey(startTile);
+            for (let y = opts.footprint.y1; y <= opts.footprint.y2; y++)
+                for (let x = opts.footprint.x1; x <= opts.footprint.x2; x++) {
+                    const k = tileKey({ x, y });
+                    if (k !== startKey) outsideAvoid.add(k);
+                }
+            route = routeToNetwork(startTile, g.get, { sandbox: opts.sandbox, avoid: outsideAvoid, startLevel: opts.level });
+        }
+        // Essai 2 (repli) : autorise à traverser l'emprise (sous ou au-dessus des pièces) si le contournement est impossible.
+        if (route === null) route = routeToNetwork(startTile, g.get, { sandbox: opts.sandbox, avoid, startLevel: opts.level });
         if (route === null) {
             connections[label] = { connected: false, access: startTile };
             return;
         }
         if (!route.length) {
             connections[label] = { connected: true, access: startTile, tiles: 0 };
+            return;
+        }
+        // Le modèle de dégagement du serveur (cache) est une approximation : simuler avant de poser évite de
+        // laisser un tronçon de chemin à moitié posé si le jeu refuse une tuile que le planificateur croyait libre.
+        const sim = await placePathTiles(ctx, route, { queue, dryRun: true });
+        if (sim.failed > 0) {
+            connections[label] = { connected: false, access: startTile };
             return;
         }
         const res = await placePathTiles(ctx, route, { queue, dryRun: false });
@@ -422,7 +450,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             title: "Créer une montagne russe (station)",
             description:
                 "Crée une attraction à circuit (montagne russe, train…) et sa station droite de stationLength tuiles, à partir de (x, y) dans le sens " +
-                "de marche `direction` (0 = −x, 1 = +y, 2 = +x, 3 = −y), puis place entrée et sortie le long de la station et les raccorde au chemin. " +
+                "de marche `direction` (0 = −x, 1 = +y, 2 = +x, 3 = −y), puis place entrée et sortie le long de la station et les raccorde au chemin " +
+                "(passerelle sur supports si level surélève la station au-dessus du terrain). " +
                 "Ensuite : coaster_build_plan (macros, puis fermeture automatique), coaster_test. Laisse au moins 15 tuiles libres devant et autour. " +
                 "object = objet 'ride' chargé d'un type à circuit (list_objects type ride ; ex. looping coaster). " +
                 "Exemple : { object: 'rct2.ride.arrt1', x: 60, y: 40, direction: 2, stationLength: 6 }.",
@@ -1026,7 +1055,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             title: "Poser un design de montagne russe (.td6)",
             description:
                 "Pose un circuit tout fait (coaster_list_designs) : crée l'attraction avec l'objet de véhicule du design (chargé au besoin), rejoue ses pièces, " +
-                "place entrée et sortie, applique les réglages (mode, trains, couleurs, attentes), puis raccorde au chemin. " +
+                "place entrée et sortie, applique les réglages (mode, trains, couleurs, attentes), puis raccorde au chemin (passerelle sur supports " +
+                "si l'entrée/la sortie se trouve au-dessus du terrain environnant, ce qui est fréquent avec les designs importés). " +
                 "(x, y) = coin de l'emprise aux x et y minimaux (anchor 'corner'), ou origine du design (anchor 'origin', comme le curseur du jeu). " +
                 "direction 0-3 fait tourner le design (la première pièce part dans cette direction : 0 = −x, 1 = +y, 2 = +x, 3 = −y). " +
                 "level : hauteur imposée de l'origine ; par défaut, la plus basse qui garde toute la piste au-dessus du terrain et de l'eau. " +
@@ -1221,9 +1251,13 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const inverse: InverseOp[] = [{ method: "ride.demolish", params: { ride: rideId } }];
             let connections: Record<string, unknown> = {};
             if (args.connectToPath && (placedAccess.entrance || placedAccess.exit)) {
-                const avoid = new Set(layout.blocks.map(tileKey));
+                // Pas d'exclusion systématique de l'emprise du circuit : la hauteur de dégagement (rh) de chaque
+                // tuile suffit à distinguer une piste qui passe à une autre hauteur (passerelle valide par-dessus
+                // ou par-dessous) d'une vraie collision. connectEntrances évite déjà les tuiles d'entrée et de
+                // sortie, et essaie d'abord de contourner l'emprise (footprint) avant d'accepter de la traverser.
+                const avoid = new Set<string>();
                 const stationLevel = Math.round(Math.min(...layout.accesses.map((a) => a.z)) / 16);
-                const c = await connectEntrances(ctx, { entrance: placedAccess.entrance, exit: placedAccess.exit, avoid, level: stationLevel, sandbox });
+                const c = await connectEntrances(ctx, { entrance: placedAccess.entrance, exit: placedAccess.exit, avoid, level: stationLevel, sandbox, footprint: layout.bbox });
                 connections = c.connections;
                 cost += c.cost;
                 if (c.placedPaths.length) inverse.unshift({ method: "path.remove_tiles", params: { tiles: c.placedPaths.map((t) => ({ x: t.x, y: t.y, level: t.level })) } });

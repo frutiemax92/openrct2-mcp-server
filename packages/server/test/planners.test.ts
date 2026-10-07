@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import type { RegionTile } from "@openrct2-claude/protocol";
 import { analyzeConnectivity } from "../src/planners/connectivity.js";
-import { edgeLevel, expandPolyline, onTerrain, planPath } from "../src/planners/path.js";
+import { edgeLevel, elevatedPlacement, expandPolyline, onTerrain, planPath } from "../src/planners/path.js";
 import { routeToNetwork } from "../src/tools/helpers.js";
 
 const flat = (h = 7, extra: Partial<RegionTile> = {}): RegionTile => ({ h, s: 0, w: 0, t: 0, o: 1, ...extra });
@@ -65,6 +65,19 @@ describe("analyzeConnectivity", () => {
     });
 });
 
+describe("elevatedPlacement", () => {
+    it("trouve un créneau libre entre deux pièces d'attraction à des hauteurs différentes", () => {
+        // Un circuit qui se croise lui-même : une pièce basse [10,11.5) et une pièce haute [14,16) sur la même
+        // tuile (cas réel observé en jeu). Une passerelle au niveau 12 (dégagement [12,14), PATH_CLEARANCE=2)
+        // passe tout juste entre les deux, mais pas au niveau 10 (chevauche la pièce basse) ni au niveau 13
+        // (dégagement [13,15) chevauche la pièce haute).
+        const t = flat(7, { r: [0], rh: 16, ri: [[10, 11.5], [14, 16]] });
+        expect(elevatedPlacement(t, 12)).toEqual({ level: 12, slopeDirection: null });
+        expect(elevatedPlacement(t, 10)).toBeNull();
+        expect(elevatedPlacement(t, 13)).toBeNull();
+    });
+});
+
 describe("routeToNetwork", () => {
     const path = (q = 0) => ({ p: [{ l: 7, q, e: 0, sd: -1, r: -1, a: -1 }] });
     it("ne longe pas la file d'attente d'une autre attraction (fusion automatique par le jeu)", () => {
@@ -77,5 +90,57 @@ describe("routeToNetwork", () => {
         expect(route).not.toBeNull();
         expect(route.some((t) => t.x === 0 && t.y === 1)).toBe(false);
         expect(route.some((t) => t.x === 2 && t.y === 1)).toBe(false);
+    });
+
+    it("pose une passerelle quand l'entrée est surélevée au-dessus d'un terrain plat", () => {
+        // Entrée à (0,0), niveau 12 (station surélevée), terrain plat au niveau 7 tout autour.
+        // Réseau existant : une autre passerelle déjà posée au niveau 12 en (3,0).
+        const tiles: Record<string, RegionTile> = {};
+        for (let x = 0; x <= 3; x++) tiles[`${x},0`] = flat(7);
+        tiles["3,0"] = flat(7, { p: [{ l: 12, q: 0, e: 0, sd: -1, r: -1, a: -1 }] });
+        const get = (x: number, y: number) => tiles[`${x},${y}`] ?? flat(7);
+        const route = routeToNetwork({ x: 0, y: 0 }, get, { sandbox: false, startLevel: 12 });
+        expect(route).not.toBeNull();
+        expect(route!.every((t) => t.level === 12 && t.slopeDirection === null)).toBe(true);
+        expect(route!.map((t) => `${t.x},${t.y}`)).toEqual(["0,0", "1,0", "2,0"]);
+    });
+
+    it("la passerelle ne traverse pas une attraction qui dépasse son niveau", () => {
+        const tiles: Record<string, RegionTile> = {};
+        for (let x = 0; x <= 3; x++) tiles[`${x},0`] = flat(7);
+        tiles["1,0"] = flat(7, { r: [1], rh: 12 });
+        tiles["3,0"] = flat(7, { p: [{ l: 12, q: 0, e: 0, sd: -1, r: -1, a: -1 }] });
+        const get = (x: number, y: number) => tiles[`${x},${y}`];
+        const route = routeToNetwork({ x: 0, y: 0 }, get, { sandbox: false, startLevel: 12 });
+        expect(route).toBeNull();
+    });
+
+    it("ne repasse jamais sur une de ses propres tuiles (pas de demi-tour en rampe sous son départ)", () => {
+        // Départ (0,0) niveau 12, sous une pièce de piste [10,11.5) sur toute la rangée y=0 : pour descendre il faut
+        // aller vers l'est (x=1..5 libres), puis revenir vers l'ouest. Le réseau au sol (niveau 7) est en (-6,0).
+        const tiles: Record<string, RegionTile> = {};
+        const track = { r: [0], rh: 11.5, ri: [[10, 11.5]] as [number, number][] };
+        for (let x = -5; x <= 0; x++) tiles[`${x},0`] = flat(7, track);
+        for (let x = 1; x <= 6; x++) tiles[`${x},0`] = flat(7);
+        for (let x = -5; x <= 6; x++) tiles[`${x},1`] = flat(7, x <= 0 ? track : {});
+        tiles["-6,0"] = flat(7, path());
+        const get = (x: number, y: number) => tiles[`${x},${y}`];
+        const route = routeToNetwork({ x: 0, y: 0 }, get, { sandbox: false, startLevel: 12 });
+        expect(route).not.toBeNull();
+        const keys = route!.map((t) => `${t.x},${t.y}`);
+        expect(new Set(keys).size).toBe(keys.length);
+    });
+
+    it("descend en rampe depuis une entrée surélevée jusqu'au réseau au sol", () => {
+        // Entrée à (0,0), niveau 12. Terrain plat au niveau 7. Réseau au sol (niveau 7) en (6,0).
+        // Écart de 5 niveaux : exactement 5 tuiles en rampe (x=1..5) pour redescendre, sans marge.
+        const tiles: Record<string, RegionTile> = {};
+        for (let x = 0; x <= 5; x++) tiles[`${x},0`] = flat(7);
+        tiles["6,0"] = flat(7, path());
+        const get = (x: number, y: number) => tiles[`${x},${y}`];
+        const route = routeToNetwork({ x: 0, y: 0 }, get, { sandbox: false, startLevel: 12 });
+        expect(route).not.toBeNull();
+        expect(route!.map((t) => t.level)).toEqual([12, 11, 10, 9, 8, 7]);
+        expect(route!.slice(1).every((t) => t.slopeDirection === 0)).toBe(true);
     });
 });

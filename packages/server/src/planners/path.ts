@@ -64,6 +64,29 @@ export function onTerrain(t: RegionTile): { level: number; slopeDirection: Direc
     return { level: t.h, slopeDirection: slope };
 }
 
+/** Dégagement qu'un chemin exige au-dessus de son propre niveau (clearanceHeight standard d'un footpath, ≈ 2 niveaux). */
+const PATH_CLEARANCE = 2;
+
+/**
+ * Placement d'un chemin surélevé (passerelle) à un niveau fixe, indépendant de la pente du terrain : valide si le
+ * support peut porter le chemin (terrain et eau sous le niveau visé) et si le volume [level, level+PATH_CLEARANCE)
+ * qu'occuperait le chemin ne chevauche aucune pièce d'attraction ni grande scénerie. Avec plusieurs pièces de
+ * hauteurs différentes sur une même tuile (ex. un circuit qui se croise lui-même), un créneau libre entre deux
+ * pièces reste utilisable (passerelle qui passe dessous l'une et au-dessus de l'autre).
+ */
+export function elevatedPlacement(t: RegionTile, level: number): { level: number; slopeDirection: null } | null {
+    const groundTop = t.h + (t.s & 0xf ? 1 : 0);
+    if (level < groundTop) return null;
+    if (level < t.w) return null;
+    const top = level + PATH_CLEARANCE;
+    if (t.ri) {
+        if (t.ri.some(([b, c]) => level < c && top > b)) return null;
+    } else if (t.r?.length && level <= (t.rh ?? -1)) return null;
+    if (t.lg && level <= (t.sh ?? -1)) return null;
+    if (t.p?.some((p) => p.l === level)) return null;
+    return { level, slopeDirection: null };
+}
+
 /** Hauteur (niveau) du bord d'une tuile de chemin du côté `side`, ou null si non raccordable. */
 export function edgeLevel(p: { level: number; slopeDirection: Direction | null }, side: Direction): number | null {
     if (p.slopeDirection === null) return p.level;

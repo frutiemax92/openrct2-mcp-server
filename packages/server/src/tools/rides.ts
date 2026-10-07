@@ -79,7 +79,8 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
             description:
                 "Création complète d'une attraction plate (manège, tasses…) ou d'une boutique/équipement (nourriture, boissons, toilettes) : " +
                 "crée l'attraction, pose sa pièce, place entrée et sortie (attractions), raccorde au chemin le plus proche (connectToPath) avec " +
-                "une file d'attente côté entrée, puis ouvre (open). x/y = tuile d'origine (centre pour une 3×3, coin pour 2×2/4×4), direction 0-3 " +
+                "une file d'attente côté entrée, puis ouvre (open). Si level surélève l'attraction, le raccord pose une passerelle sur supports " +
+                "jusqu'au réseau existant. x/y = tuile d'origine (centre pour une 3×3, coin pour 2×2/4×4), direction 0-3 " +
                 "(pour une boutique : côté du comptoir, 0 = −x, 1 = +y, 2 = +x, 3 = −y). L'empreinte doit être plate, possédée et libre " +
                 "(terrain_flatten avant si besoin). object = identifiant d'un objet 'ride' chargé (list_objects type ride loadedOnly ; placeable: true). " +
                 "Renvoie rideId, empreinte, entrée/sortie, tuiles de raccord et l'état de connexion. " +
