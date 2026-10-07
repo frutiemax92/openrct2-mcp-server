@@ -1,0 +1,361 @@
+{
+  "theme": "western",
+  "description": "Western : rochers, cactus et arbres clairsemés.",
+  "zones": {
+    "forest_dense": {
+      "density": 0.54,
+      "variety": 3,
+      "layers": [
+        {
+          "role": "tree_deciduous",
+          "share": 0.55,
+          "minSpacing": 1.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "cactus",
+          "share": 0.25,
+          "minSpacing": 1.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "shrub",
+          "share": 0.15,
+          "minSpacing": 0.5,
+          "fallback": [
+            "flower"
+          ]
+        },
+        {
+          "role": "rock",
+          "share": 0.05,
+          "minSpacing": 2.0
+        }
+      ],
+      "noise": {
+        "scale": 7,
+        "strength": 0.45
+      },
+      "edge": {
+        "falloff": 2,
+        "min": 0.5
+      },
+      "pathAffinity": -0.4,
+      "clearances": {
+        "path": 2,
+        "queue": 2,
+        "entrance": 3,
+        "intersection": 2,
+        "ride": 2
+      }
+    },
+    "forest_edge": {
+      "density": 0.27,
+      "variety": 3,
+      "layers": [
+        {
+          "role": "tree_deciduous",
+          "share": 0.35,
+          "minSpacing": 1.5,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "cactus",
+          "share": 0.25,
+          "minSpacing": 1.5,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "shrub",
+          "share": 0.3,
+          "minSpacing": 0.75,
+          "fallback": [
+            "flower"
+          ]
+        },
+        {
+          "role": "flower",
+          "share": 0.1,
+          "minSpacing": 0.5
+        }
+      ],
+      "noise": {
+        "scale": 5,
+        "strength": 0.6
+      },
+      "edge": {
+        "falloff": 2,
+        "min": 0.3
+      },
+      "pathAffinity": -0.2
+    },
+    "meadow": {
+      "density": 0.11,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "flower",
+          "share": 0.5,
+          "minSpacing": 0.75
+        },
+        {
+          "role": "shrub",
+          "share": 0.3,
+          "minSpacing": 1.0
+        },
+        {
+          "role": "cactus",
+          "share": 0.15,
+          "minSpacing": 4.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "rock",
+          "share": 0.05,
+          "minSpacing": 3.0
+        }
+      ],
+      "noise": {
+        "scale": 6,
+        "strength": 0.8
+      }
+    },
+    "flower_bed": {
+      "density": 0.96,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "flower",
+          "share": 0.85,
+          "minSpacing": 0.5,
+          "fallback": [
+            "shrub"
+          ]
+        },
+        {
+          "role": "shrub",
+          "share": 0.15,
+          "minSpacing": 0.5
+        }
+      ],
+      "clearances": {
+        "path": 1,
+        "queue": 1,
+        "entrance": 1,
+        "intersection": 1,
+        "ride": 1
+      }
+    },
+    "lakeshore": {
+      "density": 0.36,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "rock",
+          "share": 0.35,
+          "minSpacing": 0.75,
+          "fallback": [
+            "shrub"
+          ]
+        },
+        {
+          "role": "shrub",
+          "share": 0.35,
+          "minSpacing": 0.5,
+          "fallback": [
+            "flower"
+          ]
+        },
+        {
+          "role": "cactus",
+          "share": 0.2,
+          "minSpacing": 2.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "flower",
+          "share": 0.1,
+          "minSpacing": 0.5
+        }
+      ],
+      "require": {
+        "waterMax": 2
+      },
+      "noise": {
+        "scale": 4,
+        "strength": 0.5
+      }
+    },
+    "plaza": {
+      "density": 0.07,
+      "variety": 1,
+      "layers": [
+        {
+          "role": "cactus",
+          "share": 0.4,
+          "minSpacing": 3.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        },
+        {
+          "role": "flower",
+          "share": 0.4,
+          "minSpacing": 2.0,
+          "fallback": [
+            "shrub"
+          ]
+        },
+        {
+          "role": "statue",
+          "share": 0.2,
+          "minSpacing": 4.0,
+          "fallback": [
+            "fountain"
+          ]
+        }
+      ],
+      "clearances": {
+        "path": 1,
+        "queue": 1,
+        "entrance": 2,
+        "intersection": 1,
+        "ride": 1
+      }
+    },
+    "queue_screening": {
+      "density": 0.6,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "shrub",
+          "share": 0.6,
+          "minSpacing": 0.5,
+          "fallback": [
+            "flower"
+          ]
+        },
+        {
+          "role": "tree_deciduous",
+          "share": 0.4,
+          "minSpacing": 1.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        }
+      ],
+      "require": {
+        "queueMax": 2
+      },
+      "clearances": {
+        "path": 1,
+        "queue": 1,
+        "entrance": 2,
+        "intersection": 1,
+        "ride": 1
+      }
+    },
+    "path_border": {
+      "density": 0.48,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "flower",
+          "share": 0.45,
+          "minSpacing": 0.5,
+          "fallback": [
+            "shrub"
+          ]
+        },
+        {
+          "role": "shrub",
+          "share": 0.35,
+          "minSpacing": 0.5
+        },
+        {
+          "role": "cactus",
+          "share": 0.2,
+          "minSpacing": 3.0,
+          "fallback": [
+            "cactus",
+            "tree_deciduous",
+            "tree_conifer"
+          ]
+        }
+      ],
+      "require": {
+        "pathMax": 1
+      },
+      "pathAffinity": 0.5,
+      "clearances": {
+        "path": 1,
+        "queue": 1,
+        "entrance": 2,
+        "intersection": 1,
+        "ride": 1
+      }
+    },
+    "under_coaster": {
+      "density": 0.21,
+      "variety": 2,
+      "layers": [
+        {
+          "role": "shrub",
+          "share": 0.5,
+          "minSpacing": 0.75,
+          "fallback": [
+            "flower"
+          ]
+        },
+        {
+          "role": "flower",
+          "share": 0.3,
+          "minSpacing": 0.5
+        },
+        {
+          "role": "rock",
+          "share": 0.2,
+          "minSpacing": 1.5
+        }
+      ],
+      "require": {
+        "rideMax": 3
+      },
+      "clearances": {
+        "path": 1,
+        "queue": 1,
+        "entrance": 2,
+        "intersection": 1,
+        "ride": 1
+      }
+    }
+  }
+}

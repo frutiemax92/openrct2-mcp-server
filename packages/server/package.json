@@ -1,0 +1,30 @@
+{
+  "name": "@openrct2-claude/server",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "bin": { "openrct2-mcp": "./dist/index.js" },
+  "main": "./dist/index.js",
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsx src/index.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "vitest run",
+    "test:integration": "OPENRCT2_INTEGRATION=1 vitest run test/integration",
+    "inspect": "npx @modelcontextprotocol/inspector node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.32.0",
+    "@openrct2-claude/protocol": "workspace:*",
+    "pngjs": "^7.0.0",
+    "zod": "^3.25.0"
+  },
+  "devDependencies": {
+    "@openrct2-claude/fake-plugin": "workspace:*",
+    "@types/node": "^22.0.0",
+    "@types/pngjs": "^6.0.5",
+    "tsx": "^4.20.0",
+    "typescript": "^5.9.0",
+    "vitest": "^3.2.0"
+  }
+}

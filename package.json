@@ -1,0 +1,27 @@
+{
+  "name": "openrct2-claude",
+  "private": true,
+  "type": "module",
+  "packageManager": "pnpm@10.18.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "gen": "node tools/gen-tables.mjs",
+    "build": "pnpm -r run build",
+    "typecheck": "pnpm -r run typecheck",
+    "dev:plugin": "pnpm --filter @openrct2-claude/plugin run dev",
+    "dev:server": "pnpm --filter @openrct2-claude/server run dev",
+    "install:plugin": "pnpm --filter @openrct2-claude/plugin run install-plugin",
+    "game": "node tools/game.mjs",
+    "fake": "pnpm --filter @openrct2-claude/fake-plugin run start",
+    "test": "pnpm -r run test",
+    "test:integration": "pnpm --filter @openrct2-claude/server run test:integration",
+    "mcp:inspect": "pnpm --filter @openrct2-claude/server run inspect"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "esbuild"
+    ]
+  }
+}
