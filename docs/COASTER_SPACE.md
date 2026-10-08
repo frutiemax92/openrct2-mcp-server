@@ -142,7 +142,26 @@ La hauteur moyenne ne distingue pas les deux circuits. Ce qui compte : Frightmar
   - Vérifié : depuis la pose de Frightmare avant sa première inversion, `piece flatToUp25`, `piece up25`, `dive{right, turn: right}` et `quarter_loop{corkscrew, right}` redonnent ses 12 pièces, aux mêmes positions.
 - Tests : `test/vertical.test.ts` (reproduction de Frightmare, chaque sortie de `quarter_loop`, hauteur de `vertical_drop`, relief et leviers de Frightmare).
 
-### 8.4 Reste à faire
+### 8.4 Premier essai en jeu (8 octobre 2026)
+
+Nightmare Frenzy refait avec `dive` puis `quarter_loop` (sortie en tire-bouchon), comme la première moitié de Frightmare. La seconde moitié vient d'une recherche hors serveur (prototype de l'étape 5) avec ces macros, un objectif de relief et un garde-fou de G latéraux. Checkpoint `nf-vertical-3`.
+
+| | Frightmare | `nf-compact-2` (plat) | `nf-vertical-3` |
+|---|---|---|---|
+| Notes | 7,40 / 7,82 / 4,63 | 7,37 / 8,06 / 4,23 | **7,26** / 8,42 / 4,38 |
+| Emprise | 24×17 | 24×19 | **24×17** |
+| Pièces à 90° / éléments hauts | 6 / 8 | 0 / 1 | **8 / 9** |
+| Point haut par cinquième | 17/16/9/5/0 | 17/11/5/7/3 | 17/16,5/12/12/12 |
+| Couverture / empilées / vide | 45 % / 80 / 16 % | 46 % / 40 / 9 % | 43 % / 41 / 29 % |
+| Inversions / chutes | 5 / 6 | 5 / 11 | 6 / 7 |
+
+`reliefLevers` est vide. Restent hors critère : l'intensité (8,42, demi-boucle finale prise à 88 km/h, 4,25 G) et le vide de 9×13 à droite de l'emprise. Leçons de l'essai :
+
+- **G latéraux.** Une fermeture A* a posé deux virages de 3 tuiles non inclinés à 78 km/h. Résultat : 3,58 G latéraux, pénalité d'intensité, excitation 2,23. Le serveur l'avait signalé (« virage non incliné à grande vitesse »). La recherche de section (étape 5) doit rejeter ces virages, pas seulement avertir.
+- **Fenêtres sans données.** Les pièces de quart de boucle n'apparaissent que dans 3 ou 4 designs RCT2, et le modèle les y fait passer presque à l'arrêt (fenêtre « 1-1 km/h »). Les fenêtres tirées de moins de 5 occurrences sont désormais ignorées.
+- **Entrée et sortie de la station.** Le prototype hors serveur ignorait leurs tuiles et a fait refuser un plan. La recherche du serveur doit lire le cache de carte comme `blockProblem`.
+
+### 8.5 Reste à faire
 
 | Étape | Contenu | Validation |
 |---|---|---|

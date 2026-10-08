@@ -67,7 +67,8 @@ describe("modèle de vitesse", () => {
 
     it("tire des fenêtres d'entrée des circuits de référence", () => {
         const r = compileMacros(table, twister, start, [{ op: "lift", height: 18 }, { op: "drop", height: 16, steep: true }, { op: "inversion", kind: "loop", dir: "left", size: "small" }]);
-        const w = speedWindows(DEFAULT_MODEL, table, [r.pieces, r.pieces, r.pieces]);
-        expect(w.get("verticalLoop")?.n).toBe(3);
+        // Moins de 5 occurrences : pas de fenêtre (non significative).
+        expect(speedWindows(DEFAULT_MODEL, table, Array(4).fill(r.pieces)).get("verticalLoop")).toBeUndefined();
+        expect(speedWindows(DEFAULT_MODEL, table, Array(5).fill(r.pieces)).get("verticalLoop")?.n).toBe(5);
     });
 });

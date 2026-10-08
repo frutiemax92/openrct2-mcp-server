@@ -463,7 +463,8 @@ export function speedWindows(
     }
     const out = new Map<string, SpeedWindow>();
     for (const [kind, xs] of byKind) {
-        if (xs.vIn.length < 3) continue;
+        // Moins de 5 occurrences dans les designs : fenêtre non significative (quart de boucle : « 1-1 km/h » avec 3).
+        if (xs.vIn.length < 5) continue;
         const pct = (arr: number[], q: number) => {
             const s = [...arr].sort((a, b) => a - b);
             return s[Math.min(s.length - 1, Math.floor(q * s.length))];
