@@ -156,7 +156,8 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 | Étape | Contenu | Effet attendu |
 |---|---|---|
 | 1 | P1 décomposition + P2 comparaison — **fait** | Claude sait quel levier tirer et de combien (recalcul exact sur Frightmare et Nightmare Frenzy) |
-| 2 | P4 recherche de section | Plus de scripts hors serveur ; fermetures exactes sous contraintes |
+| 1 bis | Compacité : mesures d'espace, `bounds`, fin de P6 ([COASTER_SPACE.md](COASTER_SPACE.md)) | Claude voit qu'un élément est isolé et construit dans l'emprise de la référence |
+| 2 | P4 recherche de section, avec les objectifs d'espace de COASTER_SPACE.md | Plus de scripts hors serveur ; fermetures exactes sous contraintes |
 | 3 | P3 vue spatiale et éléments | Remplir l'intérieur, empiler comme la référence |
 | 4 | P5 G prédits + mesures fines | Plus de surprise d'intensité après l'essai |
 | 5 | P6 dégagement, P7 macros, P8 état | Moins de refus du jeu ; éléments de la référence disponibles |
