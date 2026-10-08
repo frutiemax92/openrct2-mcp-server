@@ -8,6 +8,13 @@
 //
 // Pièces spéciales : la chaîne entraîne le train à la vitesse du lift (au moins), les freins plafonnent à leur vitesse,
 // la station repart à la vitesse de départ.
+//
+// Longueur du train (simulateTrain). Le jeu calcule l'accélération de pente de chaque voiture sur sa propre pièce, puis
+// en prend la moyenne sur le train (Vehicle::UpdateTrackMotion) : intégré sur la distance, c'est la variation de la
+// hauteur moyenne des voitures, et non de la hauteur de la tête. Un train long « s'étale » sur une crête ou un sommet
+// d'inversion ; un train court suit le profil de près. La traînée quadratique est divisée par la masse totale
+// (GetAccelerationDecrease2) : à voitures égales, un train plus court (plus léger) perd sa vitesse plus vite. k2 est
+// donc rapporté à la masse du train de calage (massRef) : k2 effectif = k2 · massRef / masse.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
@@ -30,6 +37,33 @@ export interface SpeedModel {
     invExtra?: number;
     /** Nombre de transitions mesurées ayant servi au calage (0 = valeurs par défaut). */
     samples: number;
+    /** Masse totale du train de calage (unités du jeu, Car.mass) ; absente = k2 non rapporté à une masse. */
+    massRef?: number;
+}
+
+/** Forme d'un train : nombre de voitures, longueur d'une voiture (tuiles de piste) et masse totale (Car.mass). */
+export interface TrainShape {
+    cars: number;
+    carLength: number;
+    mass: number;
+}
+
+/** Espacement des voitures (RideObjectVehicle.spacing) par tuile de piste : longueur d'une tuile de station (Ride.cpp). */
+export const SPACING_PER_TILE = 0x44180;
+
+/** Forme du train à partir de ses voitures (masse et espacement de chacune). */
+export function trainShape(cars: { mass: number; spacing: number }[]): TrainShape | undefined {
+    if (!cars.length) return undefined;
+    const length = cars.reduce((a, c) => a + c.spacing, 0) / SPACING_PER_TILE;
+    return { cars: cars.length, carLength: length / cars.length, mass: cars.reduce((a, c) => a + c.mass, 0) };
+}
+
+/** Longueur du train en tuiles de piste. */
+export const trainLength = (t: TrainShape): number => t.cars * t.carLength;
+
+/** k2 effectif pour ce train : la traînée quadratique est divisée par la masse totale. */
+export function dragK2(model: SpeedModel, train?: TrainShape): number {
+    return model.massRef && train?.mass ? (model.k2 * model.massRef) / train.mass : model.k2;
 }
 
 /**
@@ -64,29 +98,39 @@ function segPeakZ(seg: TrackSegmentInfo): number {
     return z;
 }
 
-/** Fait avancer v (mph) sur une pièce ; brakeSpeed en mph pour les freins. */
+/**
+ * Profil de hauteur d'une pièce (niveaux au-dessus de son début) en fonction de la fraction parcourue t ∈ [0, 1] :
+ * montée vers le point haut puis descente vers la fin (inversions, collines), sinon droite du début à la fin. Au sommet
+ * d'une inversion, on monte de invExtra de plus en y entrant et on le redescend en en sortant.
+ */
+function heightShape(model: SpeedModel, seg: TrackSegmentInfo): (t: number) => number {
+    const extra = model.invExtra ?? 0;
+    const intoInversion = seg.endBank === 15 && seg.beginBank !== 15;
+    const outOfInversion = seg.beginBank === 15 && seg.endBank !== 15;
+    const dLevels = (seg.beginZ - seg.endZ) / 16 + (outOfInversion ? extra : 0) - (intoInversion ? extra : 0); // positif = descente
+    const climbToPeak = (segPeakZ(seg) - seg.beginZ) / 16 + (intoInversion ? extra : 0);
+    const peakFrac = climbToPeak > 0 && climbToPeak > -dLevels ? 0.5 : 0;
+    return (t) => (peakFrac ? (t <= peakFrac ? (climbToPeak * t) / peakFrac : climbToPeak + ((-dLevels - climbToPeak) * (t - peakFrac)) / (1 - peakFrac)) : -dLevels * t);
+}
+
+/** Nombre de pas de simulation sur une pièce. */
+const stepsFor = (len: number): number => Math.max(2, Math.ceil(len * 2));
+
+/** Fait avancer v (mph) sur une pièce, train ponctuel ; brakeSpeed en mph pour les freins. */
 export function stepPiece(model: SpeedModel, seg: TrackSegmentInfo, name: string, vIn: number, opts: { chain?: boolean; brakeMph?: number } = {}): PieceSpeed {
     if (STATION_TYPES.has(seg.type)) {
         const v = Math.max(model.stationSpeed, Math.min(vIn, model.stationSpeed));
         return { vIn, vOut: v, vMin: Math.min(vIn, v), stall: false };
     }
     const len = segLengthTiles(seg);
-    const extra = model.invExtra ?? 0;
-    const intoInversion = seg.endBank === 15 && seg.beginBank !== 15;
-    const outOfInversion = seg.beginBank === 15 && seg.endBank !== 15;
-    // Sommet d'inversion : on monte de `extra` de plus en y entrant, on le redescend en en sortant.
-    const dLevels = (seg.beginZ - seg.endZ) / 16 + (outOfInversion ? extra : 0) - (intoInversion ? extra : 0); // positif = descente
-    const climbToPeak = (segPeakZ(seg) - seg.beginZ) / 16 + (intoInversion ? extra : 0);
-    const n = Math.max(2, Math.ceil(len * 2));
+    const h = heightShape(model, seg);
+    const n = stepsFor(len);
     let v2 = vIn * vIn;
     let vMin = vIn;
     let stall = false;
-    // Montée vers le point haut puis descente vers la fin, répartie sur la longueur (inversions, collines).
-    const peakFrac = climbToPeak > 0 && climbToPeak > -dLevels ? 0.5 : 0;
     for (let i = 0; i < n; i++) {
         const t0 = i / n;
         const t1 = (i + 1) / n;
-        const h = (t: number) => (peakFrac ? (t <= peakFrac ? (climbToPeak * t) / peakFrac : climbToPeak + ((-dLevels - climbToPeak) * (t - peakFrac)) / (1 - peakFrac)) : -dLevels * t);
         const rise = h(t1) - h(t0);
         const v = Math.sqrt(Math.max(v2, 0));
         v2 += -model.K * rise - (model.k1 * v + model.k2 * v * v) * (len / n);
@@ -114,13 +158,14 @@ export const TRACK_SPEED_TO_MPH = 65536 / 29127;
  */
 export const brakeSpeedToMph = (brakeSpeed: number): number => (brakeSpeed & ~1) * TRACK_SPEED_TO_MPH;
 
-/** Vitesses le long d'une suite de pièces, à partir d'une vitesse d'entrée. */
-export function simulate(
-    model: SpeedModel,
-    table: SegmentTable,
-    pieces: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[],
-    vStart: number,
-): PieceSpeed[] {
+type SimPiece = TrackPieceInfo & { chain?: boolean; brakeSpeed?: number };
+
+/**
+ * Vitesses le long d'une suite de pièces, à partir d'une vitesse d'entrée. Avec `train`, simule le train entier
+ * (simulateTrain) ; sinon un train ponctuel de la masse de calage.
+ */
+export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiece[], vStart: number, train?: TrainShape): PieceSpeed[] {
+    if (train && train.cars > 0) return simulateTrain(model, table, pieces, vStart, train);
     const out: PieceSpeed[] = [];
     let v = vStart;
     for (const p of pieces) {
@@ -133,6 +178,94 @@ export function simulate(
         out.push(r);
         v = r.vOut;
     }
+    return out;
+}
+
+/**
+ * Simulation du train entier, comme Vehicle::UpdateTrackMotion : la pente agit sur la hauteur moyenne des voitures
+ * (voiture k à k · carLength derrière la tête ; avant la première pièce, la hauteur de son début), la traînée
+ * quadratique est divisée par la masse (dragK2), la chaîne tire tant qu'une voiture est sur une pièce à chaîne.
+ * Les vitesses rendues sont celles de la tête à l'entrée de chaque pièce, comme les relevés de coaster_test.
+ * Un train d'une voiture de longueur nulle redonne exactement stepPiece.
+ */
+export function simulateTrain(model: SpeedModel, table: SegmentTable, pieces: SimPiece[], vStart: number, train: TrainShape): PieceSpeed[] {
+    const segs = pieces.map((p) => table.get(p.type));
+    const starts: number[] = [];
+    const lens: number[] = [];
+    let total = 0;
+    for (const seg of segs) {
+        starts.push(total);
+        const len = seg ? segLengthTiles(seg) : 0;
+        lens.push(len);
+        total += len;
+    }
+    const shapes = segs.map((seg) => (seg ? heightShape(model, seg) : () => 0));
+    // Hauteur du début de chaque pièce, enchaînée sur la fin du profil de la précédente (continue même avec invExtra,
+    // qui monte en entrant dans l'inversion et redescend en en sortant).
+    const base: number[] = [];
+    pieces.forEach((p, i) => base.push(i === 0 ? (p.z + (segs[0]?.beginZ ?? 0)) / 16 : base[i - 1] + shapes[i - 1](1)));
+    // Pièce sous l'abscisse s (recherche dichotomique).
+    const pieceAt = (s: number): number => {
+        let lo = 0;
+        let hi = pieces.length - 1;
+        while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (starts[mid] <= s) lo = mid;
+            else hi = mid - 1;
+        }
+        return lo;
+    };
+    const height = (s: number): number => {
+        if (!pieces.length) return 0;
+        if (s <= 0) return base[0];
+        const i = pieceAt(Math.min(s, total));
+        return base[i] + shapes[i](lens[i] ? Math.min(1, (Math.min(s, total) - starts[i]) / lens[i]) : 1);
+    };
+    const offsets = Array.from({ length: Math.max(1, train.cars) }, (_, k) => k * train.carLength);
+    const meanHeight = (s: number): number => offsets.reduce((a, d) => a + height(s - d), 0) / offsets.length;
+    const onChain = (s: number): boolean => offsets.some((d) => s - d >= 0 && !!pieces[pieceAt(s - d)]?.chain);
+    const k2 = dragK2(model, train);
+    const out: PieceSpeed[] = [];
+    let v = vStart;
+    pieces.forEach((p, i) => {
+        const seg = segs[i];
+        if (!seg) {
+            out.push({ vIn: v, vOut: v, vMin: v, stall: false });
+            return;
+        }
+        if (STATION_TYPES.has(seg.type)) {
+            const r = stepPiece(model, seg, SegmentTable.nameOf(p.type), v);
+            out.push(r);
+            v = r.vOut;
+            return;
+        }
+        const n = stepsFor(lens[i]);
+        const ds = lens[i] / n;
+        let v2 = v * v;
+        let vMin = v;
+        let stall = false;
+        let s = starts[i];
+        let hPrev = meanHeight(s);
+        for (let j = 0; j < n; j++) {
+            const hNext = meanHeight(s + ds);
+            const rise = hNext - hPrev;
+            const vv = Math.sqrt(Math.max(v2, 0));
+            v2 += -model.K * rise - (model.k1 * vv + k2 * vv * vv) * ds;
+            if (rise > 0 && onChain(s + ds / 2)) v2 = Math.max(v2, model.liftSpeed * model.liftSpeed);
+            if (v2 <= 0.25) {
+                stall = true;
+                v2 = 0.25;
+            }
+            vMin = Math.min(vMin, Math.sqrt(v2));
+            s += ds;
+            hPrev = hNext;
+        }
+        let vOut = Math.sqrt(v2);
+        const name = SegmentTable.nameOf(p.type);
+        if (BRAKE_NAMES.has(name) && p.brakeSpeed !== undefined) vOut = Math.min(vOut, brakeSpeedToMph(p.brakeSpeed));
+        out.push({ vIn: v, vOut, vMin: Math.min(vMin, vOut), stall });
+        v = vOut;
+    });
     return out;
 }
 
@@ -171,8 +304,8 @@ export function matchSamples(pieces: TrackPieceInfo[], samples: PieceSample[]): 
 }
 
 /** Écart moyen (km/h) entre vitesses d'entrée simulées et mesurées, hors stations et freins. */
-export function modelError(model: SpeedModel, table: SegmentTable, measured: MeasuredPiece[]): number {
-    const sim = simulate(model, table, measured.map((m) => m.piece), model.stationSpeed);
+export function modelError(model: SpeedModel, table: SegmentTable, measured: MeasuredPiece[], train?: TrainShape): number {
+    const sim = simulate(model, table, measured.map((m) => m.piece), model.stationSpeed, train);
     let e = 0;
     let n = 0;
     measured.forEach((m, i) => {
@@ -188,27 +321,31 @@ export function modelError(model: SpeedModel, table: SegmentTable, measured: Mea
  * Cale K, k1, k2 et la vitesse du lift en simulant tout le circuit depuis la station et en minimisant l'écart moyen
  * aux vitesses mesurées (recherche sur grille). Un ajustement pièce à pièce est trop bruité : à vitesse 4, une frame
  * couvre 4 ticks et la « vitesse d'entrée » relevée tombe n'importe où dans la pièce.
- * Le calage n'est gardé que s'il fait mieux que le modèle précédent sur ces mesures.
+ * Le calage n'est gardé que s'il fait mieux que le modèle précédent sur ces mesures. Avec le train de l'essai, la
+ * simulation suit le train entier et le k2 calé est rapporté à sa masse (massRef).
  */
-export function fitModel(table: SegmentTable, measured: MeasuredPiece[], prior: SpeedModel): SpeedModel {
+export function fitModel(table: SegmentTable, measured: MeasuredPiece[], prior: SpeedModel, train?: TrainShape): SpeedModel {
     const used = measured.filter((m) => m.sample && m.sample.n > 0).length;
     if (used < 12) return prior;
     const lift = measured.filter((m) => m.piece.chain && m.sample && m.sample.n > 0).map((m) => m.sample!.vFirst);
     const liftSpeed = lift.length ? median(lift) : prior.liftSpeed;
-    let best = { ...prior, liftSpeed };
-    let bestErr = modelError(best, table, measured);
+    // Le k2 du modèle précédent, ramené au train de l'essai : le calage repart de là et se rapporte à sa masse.
+    const k2Here = dragK2(prior, train);
+    const massRef = train?.mass ?? prior.massRef;
+    let best: SpeedModel = { ...prior, liftSpeed, k2: k2Here, massRef };
+    let bestErr = modelError(best, table, measured, train);
     for (let K = 120; K <= 320; K += 10)
         for (const k1 of [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5])
             for (const k2 of [0, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005])
                 for (const invExtra of [0, 1, 2, 3, 4]) {
                     const m = { ...best, K, k1, k2, invExtra };
-                    const e = modelError(m, table, measured);
+                    const e = modelError(m, table, measured, train);
                     if (e < bestErr) {
                         best = m;
                         bestErr = e;
                     }
                 }
-    if (bestErr >= modelError(prior, table, measured)) return prior;
+    if (bestErr >= modelError(prior, table, measured, train)) return prior;
     return { ...best, samples: prior.samples + used };
 }
 
@@ -306,10 +443,15 @@ export function elementMinSpeed(table: SegmentTable, pieces: TrackPieceInfo[], s
 }
 
 /** Fenêtres d'entrée par genre d'élément, calculées avec le modèle sur des circuits de référence (designs RCT2). */
-export function speedWindows(model: SpeedModel, table: SegmentTable, circuits: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[][]): Map<string, SpeedWindow> {
+export function speedWindows(
+    model: SpeedModel,
+    table: SegmentTable,
+    circuits: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[][],
+    trains?: (TrainShape | undefined)[],
+): Map<string, SpeedWindow> {
     const byKind = new Map<string, { vIn: number[]; vMin: number[] }>();
-    for (const pieces of circuits) {
-        const sim = simulate(model, table, pieces, model.stationSpeed);
+    for (const [c, pieces] of circuits.entries()) {
+        const sim = simulate(model, table, pieces, model.stationSpeed, trains?.[c]);
         pieces.forEach((p, i) => {
             const kind = elementKind(SegmentTable.nameOf(p.type));
             if (!kind || p.chain || sim[i].stall) return;
@@ -328,5 +470,40 @@ export function speedWindows(model: SpeedModel, table: SegmentTable, circuits: (
         };
         out.set(kind, { kind, p10: pct(xs.vIn, 0.1), p50: pct(xs.vIn, 0.5), p90: pct(xs.vIn, 0.9), n: xs.vIn.length, min10: pct(xs.vMin, 0.1), min50: pct(xs.vMin, 0.5) });
     }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Sections de freinage et longueur du train
+// ---------------------------------------------------------------------------
+
+export interface BrakeRun {
+    /** Indice du frein de bloc (ou de la dernière pièce de frein avant la station). */
+    index: number;
+    /** Longueur droite de freins qui y mène, frein de bloc compris (tuiles). */
+    tiles: number;
+    beforeStation: boolean;
+}
+
+/**
+ * Sections de freins d'un circuit fermé (pièces dans l'ordre de marche, station en tête ou n'importe où) : la suite de
+ * freins qui précède chaque frein de bloc et celle qui précède la station. Le train doit y tenir en entier pour s'y
+ * arrêter sans que sa queue reste dans la section d'avant (préférence : « frein de bloc assez long pour le train »).
+ */
+export function brakeRuns(table: SegmentTable, pieces: TrackPieceInfo[]): BrakeRun[] {
+    const n = pieces.length;
+    const isBrake = (i: number) => BRAKE_NAMES.has(SegmentTable.nameOf(pieces[((i % n) + n) % n].type));
+    const runEndingAt = (i: number): number => {
+        let tiles = 0;
+        for (let k = 0; k < n && isBrake(i - k); k++) tiles += segLengthTiles(table.require(pieces[(((i - k) % n) + n) % n].type));
+        return tiles;
+    };
+    const out: BrakeRun[] = [];
+    pieces.forEach((p, i) => {
+        const name = SegmentTable.nameOf(p.type);
+        const next = pieces[(i + 1) % n];
+        const beforeStation = !!next && STATION_TYPES.has(next.type) && isBrake(i);
+        if (name === "blockBrakes" || name === "diagBlockBrakes" || beforeStation) out.push({ index: i, tiles: runEndingAt(i), beforeStation });
+    });
     return out;
 }

@@ -60,6 +60,9 @@ import { designDirs, designLayout, loadLibrary, type DesignEntry, type DesignLay
 import {
     SpeedModels,
     TRACK_SPEED_TO_MPH,
+    brakeRuns,
+    trainLength,
+    trainShape,
     elementKind,
     elementMinSpeed,
     fitModel,
@@ -73,6 +76,7 @@ import {
     type PieceSpeed,
     type SpeedModel,
     type SpeedWindow,
+    type TrainShape,
 } from "../planners/speed.js";
 import {
     ENTRY_FLAG,
@@ -119,19 +123,59 @@ async function segmentTable(ctx: ToolContext): Promise<SegmentTable> {
 let modelsCache: SpeedModels | null = null;
 const speedModels = (ctx: ToolContext): SpeedModels => (modelsCache ??= SpeedModels.inUserDir(ctx.config.userDir));
 
-let windowsCache: { model: SpeedModel; windows: Map<string, SpeedWindow> } | null = null;
+let windowsCache: { model: SpeedModel; key: string; windows: Map<string, SpeedWindow> } | null = null;
 
-/** Fenêtres de vitesse d'entrée par genre d'élément, sur les circuits fermés de la bibliothèque de designs. */
-function elementWindows(ctx: ToolContext, table: SegmentTable, model: SpeedModel): Map<string, SpeedWindow> {
-    if (windowsCache && windowsCache.model === model) return windowsCache.windows;
-    const circuits = designLibrary(ctx)
+/**
+ * Fenêtres de vitesse d'entrée par genre d'élément, sur les circuits fermés de la bibliothèque de designs. Avec un
+ * train connu, chaque design est simulé avec son nombre de voitures, la longueur et la masse par voiture de ce train
+ * (même véhicule supposé), pour rester comparable aux vitesses simulées du circuit.
+ */
+function elementWindows(ctx: ToolContext, table: SegmentTable, model: SpeedModel, train?: TrainShape): Map<string, SpeedWindow> {
+    const key = train ? `${train.carLength}/${train.mass / train.cars}` : "";
+    if (windowsCache && windowsCache.model === model && windowsCache.key === key) return windowsCache.windows;
+    const designs = designLibrary(ctx)
         .filter((e): e is DesignEntry & { design: TrackDesign } => !!e.design && !!rideTrackInfo(e.design.rideType))
-        .map((e) => designLayout(e.design, table, { x: 0, y: 0, z: 0 }, 0))
-        .filter((l) => l.closed && !l.unknownPieces.length)
-        .map((l) => l.pieces);
-    const windows = speedWindows(model, table, circuits);
-    windowsCache = { model, windows };
+        .map((e) => ({ e, l: designLayout(e.design, table, { x: 0, y: 0, z: 0 }, 0) }))
+        .filter(({ l }) => l.closed && !l.unknownPieces.length);
+    const trains = designs.map(({ e }) => {
+        const cars = e.design.carsPerTrain;
+        return train && cars ? { cars, carLength: train.carLength, mass: (train.mass / train.cars) * cars } : undefined;
+    });
+    const windows = speedWindows(model, table, designs.map(({ l }) => l.pieces), trains);
+    windowsCache = { model, key, windows };
     return windows;
+}
+
+const trainCache = new Map<number, TrainShape>();
+
+/**
+ * Train d'une attraction (longueur et masse) : lu sur la piste s'il y en a un (essai ou ouverte), sinon le dernier
+ * vu par ce serveur ou gardé avec la dernière mesure. undefined : modèle ponctuel.
+ */
+async function rideTrain(ctx: ToolContext, rideId: number): Promise<TrainShape | undefined> {
+    try {
+        const r = await ctx.bridge.call("ride.train", { ride: rideId });
+        const t = trainShape(r.cars.filter((c) => c.spacing > 0));
+        if (t) {
+            trainCache.set(rideId, t);
+            return t;
+        }
+    } catch {
+        // Plugin sans ride.train (ancienne version, redémarrer le jeu) : on garde la dernière forme connue.
+    }
+    return trainCache.get(rideId) ?? measures(ctx).latest(rideId)?.train;
+}
+
+/** Avertissements : section de freins plus courte que le train (il s'y arrête la queue dans la section précédente). */
+function brakeRunWarnings(table: SegmentTable, pieces: TrackPieceInfo[], train: TrainShape | undefined): string[] {
+    if (!train) return [];
+    const need = trainLength(train);
+    return brakeRuns(table, pieces)
+        .filter((r) => r.tiles + 0.01 < need)
+        .map(
+            (r) =>
+                `FREINS TROP COURTS : ${r.beforeStation ? "freins avant la station" : `section du frein de bloc (pièce ${r.index})`} sur ${r.tiles.toFixed(1)} tuile(s), le train en fait ${need.toFixed(1)} (${train.cars} voitures). Allonge la ligne droite de freins (brakes { length }).`,
+        );
 }
 
 const kmh = (v: number) => mphToKmh(v);
@@ -411,7 +455,7 @@ let measuresCache: MeasureStore | null = null;
 const measures = (ctx: ToolContext): MeasureStore => (measuresCache ??= MeasureStore.inUserDir(ctx.config.userDir));
 
 /** Garde les mesures d'un essai réussi (coaster_compare les réutilise tant que le circuit ne change pas). */
-function recordMeasure(ctx: ToolContext, st: CoasterState, detail: RideDetail, measured: MeasuredPiece[], rating: RatingReport | undefined): CoasterMeasure {
+function recordMeasure(ctx: ToolContext, st: CoasterState, detail: RideDetail, measured: MeasuredPiece[], rating: RatingReport | undefined, train?: TrainShape): CoasterMeasure {
     const m: CoasterMeasure = {
         rideId: st.rideId,
         name: st.name,
@@ -425,6 +469,7 @@ function recordMeasure(ctx: ToolContext, st: CoasterState, detail: RideDetail, m
         speedsKmh: measured.map((x) => (x.sample && x.sample.n > 0 ? kmh(x.sample.vFirst) : -1)),
         g: measured.map((x) => (x.sample ? { vertMax: x.sample.gVertMax, vertMin: x.sample.gVertMin, latMax: x.sample.gLatMax } : null)),
         rating: rating ? { terms: rating.raw, inputs: rating.inputs, computed: rating.computed } : undefined,
+        train,
     };
     measures(ctx).set(m);
     return m;
@@ -445,7 +490,8 @@ async function measureFor(ctx: ToolContext, rideId: number, maxTicks: number, re
         toolError("GAME_ACTION_FAILED", `${st.name} : essai non concluant (accident ou essais incomplets).`, { hint: `coaster_test { ride: ${rideId} } pour le détail.` });
     }
     const rating = await ratingBreakdown(ctx, st, run.detail);
-    return { m: recordMeasure(ctx, st, run.detail, matchSamples(st.pieces, [...run.samples.values()]), rating), fresh: true };
+    const train = await rideTrain(ctx, rideId);
+    return { m: recordMeasure(ctx, st, run.detail, matchSamples(st.pieces, [...run.samples.values()]), rating, train), fresh: true };
 }
 
 /** Version compacte pour les réponses d'outils (sans les entrées brutes). */
@@ -1033,15 +1079,20 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const styleWarnings = planWarnings(st.table, all, peakBefore);
             // Vitesse : depuis la station le long du circuit existant, puis le long du plan et de la fermeture.
             const model = speedModels(ctx).get(st.rideType);
-            const before = simulate(model, st.table, st.pieces, model.stationSpeed);
-            const vCursor = before.length ? before[before.length - 1].vOut : model.stationSpeed;
-            const sim = simulate(model, st.table, all, vCursor);
-            styleWarnings.push(...speedWarnings(st.table, all, sim, elementWindows(ctx, st.table, model), args.plan as Macro[]));
+            // Circuit existant et plan simulés d'un seul tenant : les voitures de queue sont encore sur les pièces d'avant.
+            const train = await rideTrain(ctx, st.rideId);
+            const whole = simulate(model, st.table, [...st.pieces, ...all], model.stationSpeed, train);
+            const sim = whole.slice(st.pieces.length);
+            const vCursor = st.pieces.length ? whole[st.pieces.length - 1].vOut : model.stationSpeed;
+            styleWarnings.push(...speedWarnings(st.table, all, sim, elementWindows(ctx, st.table, model, train), args.plan as Macro[]));
+            if (closure?.pieces || samePose(planEnd, st.stationStart)) styleWarnings.push(...brakeRunWarnings(st.table, [...st.pieces, ...all], train));
             const speeds = {
                 cursorKmh: kmh(vCursor),
                 macros: macroProfile(all, sim, args.plan as Macro[]),
                 closure: closure?.pieces?.length ? { inKmh: kmh(sim[compiled.pieces.length]?.vIn ?? 0), outKmh: kmh(sim[sim.length - 1].vOut) } : undefined,
-                model: model.samples ? `calé sur ${model.samples} mesures` : "valeurs par défaut (lance coaster_test sur un circuit de référence pour caler)",
+                model:
+                    (model.samples ? `calé sur ${model.samples} mesures` : "valeurs par défaut (lance coaster_test sur un circuit de référence pour caler)") +
+                    (train ? `, train de ${train.cars} voitures (${trainLength(train).toFixed(1)} tuiles)` : ", train ponctuel (longueur inconnue : lance coaster_test)"),
             };
             const stationZ = st.stationStart.z;
             if (args.dryRun) {
@@ -1307,6 +1358,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const st = await loadCoaster(ctx, ride);
             if (!st.closed) toolError("INVALID_PARAMS", `Circuit ouvert (${st.pieces.length} pièces).`, { hint: "coaster_build_plan { plan: [], close: true } pour refermer." });
             const run = await runCoasterTest(ctx, st, maxTicks);
+            // Le train est encore sur la piste (attraction en essai) : sa longueur et sa masse servent au calage.
+            const train = await rideTrain(ctx, ride);
             const { ticks, samples } = run;
             const detail = run.detail;
             const f = flagsOf(detail);
@@ -1351,8 +1404,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             ].filter(Boolean);
             const models = speedModels(ctx);
             const prior = models.get(st.rideType);
-            const fitted = tested ? fitModel(st.table, measured, prior) : prior;
-            const meanError = modelError(fitted, st.table, measured);
+            const fitted = tested ? fitModel(st.table, measured, prior, train) : prior;
+            const meanError = modelError(fitted, st.table, measured, train);
             if (fitted !== prior) models.set(st.rideType, fitted);
             let rating: RatingReport | { error: string } | undefined;
             if (tested && !(f & RIDE_FLAGS.crashed)) {
@@ -1361,7 +1414,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 } catch (e) {
                     rating = { error: `Décomposition indisponible : ${e instanceof Error ? e.message : String(e)} (plugin à jour ? redémarre le jeu après install:plugin).` };
                 }
-                recordMeasure(ctx, st, detail, measured, rating && "computed" in rating ? rating : undefined);
+                recordMeasure(ctx, st, detail, measured, rating && "computed" in rating ? rating : undefined, train);
             }
             return result({
                 budget: BUDGET.readLarge,
@@ -1468,7 +1521,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     ratings: { excitement: detail.excitement, intensity: detail.intensity, nausea: detail.nausea },
                     closed: st.closed,
                     layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
-                    sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed).map((x) => kmh(x.vIn))),
+                    sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed, await rideTrain(ctx, st.rideId)).map((x) => kmh(x.vIn))),
                     inversionsAvailable: availableInversions(table, st.ride),
                 },
             });

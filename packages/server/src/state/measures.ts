@@ -28,6 +28,11 @@ export class MeasureStore {
         return m && m.fingerprint === fingerprint ? m : undefined;
     }
 
+    /** Dernière mesure de l'attraction, quel que soit son circuit (train, par exemple). */
+    latest(rideId: number): CoasterMeasure | undefined {
+        return this.byRide.get(rideId);
+    }
+
     set(m: CoasterMeasure): void {
         this.byRide.set(m.rideId, m);
         if (!this.file) return;

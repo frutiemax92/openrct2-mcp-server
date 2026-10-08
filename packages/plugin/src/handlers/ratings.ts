@@ -9,6 +9,8 @@ import {
     type ProximityKey,
     type RatingScanParams,
     type RatingScanResult,
+    type RideTrainParams,
+    type RideTrainResult,
 } from "@openrct2-claude/protocol";
 import type { Job } from "../queue";
 import { fail, isInt, requireParkLoaded } from "../util";
@@ -170,6 +172,29 @@ function isSheltered(x: number, y: number, z: number): boolean {
         if (el.type === "small_scenery" && fullTileScenery(el as SmallSceneryElement)) return true;
     }
     return false;
+}
+
+/**
+ * Voitures du premier train : masse (voiture + visiteurs), espacement et masse à vide de l'objet. Sert au modèle de
+ * vitesse (longueur et masse du train). Les trains n'existent que si l'attraction est en essai ou ouverte.
+ */
+export function* train(params: RideTrainParams): Job {
+    requireParkLoaded();
+    if (!isInt(params.ride)) fail("INVALID_PARAMS", "Identifiant d'attraction entier attendu.");
+    const ride = map.getRide(params.ride);
+    if (!ride) fail("NOT_FOUND", `Attraction ${params.ride} introuvable.`);
+    const vehicles = ride.object.vehicles;
+    const cars: RideTrainResult["cars"] = [];
+    let id: number | null = ride.vehicles.length ? ride.vehicles[0] : null;
+    while (id !== null && cars.length < 64) {
+        const car = map.getEntity(id) as Car | null;
+        if (!car) break;
+        const v = vehicles[car.vehicleObject];
+        cars.push({ mass: car.mass, spacing: v ? v.spacing : 0, carMass: v ? v.carMass : 0 });
+        id = car.nextCarOnTrain;
+    }
+    const result: RideTrainResult = { cars, trains: ride.vehicles.length };
+    return result;
 }
 
 export function* scan(params: RatingScanParams): Job {

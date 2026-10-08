@@ -3,7 +3,7 @@
 
 import type { RideDetail, TrackPieceInfo } from "@openrct2-claude/protocol";
 import type { RatingInputs, TermPart } from "./ratings.js";
-import { elementKind } from "./speed.js";
+import { elementKind, type TrainShape } from "./speed.js";
 import { SegmentTable, type LayoutStats } from "./track.js";
 
 /** Terme de note tel que gardé avec une mesure (notes en centièmes). */
@@ -33,6 +33,8 @@ export interface CoasterMeasure {
     /** G mesurés par pièce (null si aucun relevé). */
     g: ({ vertMax: number; vertMin: number; latMax: number } | null)[];
     rating?: { terms: StoredTerm[]; inputs: RatingInputs; computed: { excitement: number; intensity: number; nausea: number } };
+    /** Train de l'essai (longueur et masse), pour le modèle de vitesse. */
+    train?: TrainShape;
 }
 
 /** Empreinte d'un circuit : nombre de pièces et hachage FNV-1a de leurs types et positions. */

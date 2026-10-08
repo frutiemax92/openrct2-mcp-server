@@ -55,6 +55,7 @@ export const handlers: Record<string, Handler> = {
     "track.segments": ride.segments,
     "track.circuit": ride.circuit,
     "track.rating_scan": ratings.scan,
+    "ride.train": ratings.train,
     "scenery.place_small": build.placeSmall,
     "scenery.place_large": build.placeLarge,
     "scenery.place_wall": build.placeWall,

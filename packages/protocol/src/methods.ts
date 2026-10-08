@@ -733,6 +733,17 @@ export const PROXIMITY_KEYS = [
 ] as const;
 export type ProximityKey = (typeof PROXIMITY_KEYS)[number];
 
+export interface RideTrainParams {
+    ride: number;
+}
+
+/** Voitures du premier train, de la tête à la queue (vide si l'attraction n'a pas de train sur la piste). */
+export interface RideTrainResult {
+    /** mass : Car.mass (voiture + visiteurs) ; spacing et carMass : RideObjectVehicle de la voiture. */
+    cars: { mass: number; spacing: number; carMass: number }[];
+    trains: number;
+}
+
 export interface RatingScanParams {
     ride: number;
     /** Pièces dans le sens de marche : tuile, z monde du bloc de séquence 0, type. */
@@ -837,6 +848,7 @@ export interface MethodMap {
     "track.segments": [TrackSegmentsParams, TrackSegmentsResult];
     "track.circuit": [TrackCircuitParams, TrackCircuitResult];
     "track.rating_scan": [RatingScanParams, RatingScanResult];
+    "ride.train": [RideTrainParams, RideTrainResult];
     "scenery.place_small": [SceneryPlaceParams, BulkResult];
     "scenery.place_large": [LargeSceneryPlaceParams, BulkResult];
     "scenery.place_wall": [WallPlaceParams, BulkResult];
