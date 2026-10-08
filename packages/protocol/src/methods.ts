@@ -576,6 +576,31 @@ export interface TimeRunParams {
     speed?: number;
     /** Remettre la pause après (défaut : état initial). */
     pauseAfter?: boolean;
+    /** Relève, à chaque frame, la vitesse et les G du premier train de cette attraction, par pièce de piste. */
+    sample?: { ride: number };
+}
+
+/**
+ * Mesures agrégées sur une pièce de piste pendant time.run { sample } (G en g). Les vitesses sont en velocity / 65536
+ * (unités des consignes de frein) : × 2,25 pour des mph affichés (ToHumanReadableSpeed : velocity × 9 >> 18).
+ */
+export interface PieceSample {
+    /** Origine de la pièce (unités monde), comme trackplace. */
+    x: number;
+    y: number;
+    z: number;
+    direction: number;
+    trackType: number;
+    /** Nombre de relevés (frames) où la tête du train était sur la pièce. */
+    n: number;
+    /** Vitesse au premier relevé sur la pièce (entrée approximative), minimale et maximale. */
+    vFirst: number;
+    vMin: number;
+    vMax: number;
+    /** G verticaux max/min et G latéraux max (valeur absolue), toutes voitures confondues. */
+    gVertMax: number;
+    gVertMin: number;
+    gLatMax: number;
 }
 
 export interface BatchOp {
@@ -660,6 +685,8 @@ export interface TrackPieceInfo {
     /** Indice de station (pièces de station), sinon absent. */
     station?: number;
     chain?: boolean;
+    /** Vitesse de frein ou de booster (mph), lue dans le jeu. */
+    brakeSpeed?: number;
 }
 
 export interface TrackCircuitParams {
@@ -762,7 +789,7 @@ export interface MethodMap {
     "checkpoint.save": [CheckpointParams, { filename: string }];
     "checkpoint.restore": [CheckpointRestoreParams, { requested: string }];
     "time.status": [Record<string, never>, TimeStatus];
-    "time.run": [TimeRunParams, TimeStatus & { ticksRun: number }];
+    "time.run": [TimeRunParams, TimeStatus & { ticksRun: number; samples?: PieceSample[] }];
     "batch.execute": [BatchParams, BatchResult];
     "staff.hire": [StaffHireParams, StaffHireResult];
     "staff.fire": [{ id: number }, ActionOutcome];

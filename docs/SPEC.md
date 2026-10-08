@@ -776,6 +776,7 @@ Module du serveur qui, à partir d'une **pose** `(x, y, z, direction, pente, inc
 | `coaster_undo` | Retire les *n* dernières pièces (`trackremove`). |
 | `coaster_plan_closure` | Cherche un chemin de ≤ *N* pièces qui ramène à la station (13.5). |
 | `coaster_build_plan` | Compile un plan en **macro-éléments** (12.6) en pièces, valide, construit avec retour arrière en cas d'échec. |
+| `coaster_describe` | Relit un circuit du parc (`ride`) ou un design `.td6` (`design`) pour s'en inspirer : mesures (`layout`) et séquence des pièces groupées avec les hauteurs (12.6). |
 | `coaster_list_designs` | Liste les designs `.td6`/`.td7` installés (nom, type, véhicule installé ou non, notes attendues, emprise) (12.7). |
 | `coaster_place_design` | Place un `.td6` (12.7). |
 | `coaster_test` | Passe en `testing`, laisse tourner, renvoie le rapport (12.8). |
@@ -801,6 +802,25 @@ Claude planifie en 10 à 20 macro-éléments plutôt qu'en 150 pièces :
 
 Chaque macro est compilé en pièces par le planificateur ; échec = erreur structurée (« la pièce 14 collisionne avec le chemin en (60,64) »). Le plan reste éditable (liste de macros), ce qui permet à Claude de corriger localement.
 
+**Macros implémentées** (`planners/track.ts`, `compileMacros`) : `straight{length}`, `lift{height, steep?}` (chaîne droite ; raide par défaut si le type le permet, `steep: false` pour un lift 25°), `climb`, `drop{height, steep?}`, `hill{height, steep?}` (colline : montée puis descente de même hauteur), `turn{dir, size: small|medium|large, banked?, quarters?, slope: flat|up|down|steep_up|steep_down}` (`large` = huitième vers la diagonale puis retour, `steep_*` = virage d'1 tuile à 60°), `helix{dir, quarters, down?, size}` (large par défaut), `inversion{kind, dir, size?}`, `loop{dir}` (petite boucle verticale), `s_bend`, `brakes`, `block_brakes`, `photo`, `level`, `piece{name, chain?}`. Un plan compte jusqu'à 60 macros.
+
+`inversion` pose une inversion complète (entrée et sortie à l'endroit). Sans `size`, la plus grande taille disponible est prise. Les paires viennent des 201 designs de RCT2 :
+
+| `kind` | small | medium / large |
+|---|---|---|
+| `loop` | `{d}VerticalLoop` | `{d}{Medium,Large}HalfLoopUp` + `{o}…HalfLoopDown` |
+| `immelmann` | `halfLoopUp` + `{d}BarrelRollDownToUp` (sinon vrille, sinon tire-bouchon) | idem avec la demi-boucle `{d}{Medium,Large}` |
+| `dive_loop` | `{d}BarrelRollUpToDown` (sinon vrille, tire-bouchon) + `halfLoopDown` | idem avec `{d}{Medium,Large}HalfLoopDown` |
+| `corkscrew` | `{d}CorkscrewUp` + `{o}CorkscrewDown` | `{d}LargeCorkscrewUp` + `{o}LargeCorkscrewDown` |
+| `zero_g_roll` | `{d}ZeroGRollUp` + `{d}ZeroGRollDown` | `{d}LargeZeroGRollUp` + `{d}LargeZeroGRollDown` |
+| `barrel_roll` | `{d}BarrelRollUpToDown` + `{d}BarrelRollDownToUp` (sinon vrilles) | — |
+
+(`{d}` = côté demandé, `{o}` = côté opposé.) L'erreur d'une inversion indisponible liste celles que le type permet ; `coaster_create` les annonce aussi.
+
+**Retour sur le style.** `coaster_build_plan` renvoie `layout` (pièces, `lengthTiles`, emprise, `density` = tuiles de piste par tuile d'emprise, niveaux min/max, inversions) et des `warnings` non bloquants : chaîne posée sur un virage, virage serré (3 tuiles ou petite hélice) ou non incliné pris à grande vitesse. La vitesse est estimée par la hauteur perdue depuis le point le plus haut. `coaster_describe` donne les mêmes mesures pour un circuit de référence, ainsi que sa séquence (« `17×up25⛓ L-0.5→16.5, …` », hauteurs en niveaux au-dessus de la station). Exemple, Frightmare : 112 pièces, 205 tuiles de piste sur 24×17 (densité 0,5), lift droit de 19 pièces, 5 inversions, et un tracé qui plonge jusqu'à 7 niveaux sous la station.
+
+> Constat (7 octobre 2026), tentative « dans le style de Frightmare » sans ces outils. Claude n'avait aucun moyen de lire la référence. La seule inversion proposée était la petite boucle verticale. Les consignes demandaient « 5 à 15 macros », et le plan était limité à 30. Résultat : lift replié en virage, petite boucle, hélice serrée à pleine vitesse, et 71 pièces (491 m) sur 35×30, contre 112 pièces sur 24×17 pour la référence.
+
 ### 12.7 Designs `.td6`
 
 - `[VÉRIFIÉ F21 — spike S6]` Aucune voie directe : l'action `trackdesign` existe mais ne transmet pas le design depuis un script, et aucune API ne charge un `.td6`.
@@ -815,6 +835,20 @@ Chaque macro est compilé en pièces par le planificateur ; échec = erreur stru
 
 ### 12.8 Test et rapport
 
+> **Implémenté (7 octobre 2026) : vitesse mesurée et prédite.** Sans vitesse, le planificateur posait des éléments au hasard de l'élan : par exemple un zero-g roll au ras du sol juste après la grande chute (intensité 14,6, 5,5 G). Trois pièces :
+>
+> 1. **Mesure.** `time.run { sample: { ride } }` relève à chaque frame la vitesse de la tête du premier train (`car.velocity` / 65536, l'unité des consignes de frein ; le serveur multiplie par 2,25 pour des mph affichés, car `ToHumanReadableSpeed` = velocity × 9 >> 18) sur sa pièce, et les G verticaux et latéraux de chaque voiture (`car.gForces`, centièmes de g) sur la sienne. Le résultat est agrégé par pièce : `PieceSample` (vitesse d'entrée, min, max, G). `track.circuit` renvoie aussi `chain` et `brakeSpeed` (mph) de chaque pièce.
+> 2. **Rapport.** `coaster_test` ferme deux fois l'attraction avant l'essai, ce qui efface un accident précédent (`RideSetStatusAction` n'efface l'indicateur que sur une attraction déjà fermée). Il renvoie `profile`, la séquence groupée avec la vitesse d'entrée mesurée (« `@km/h` »), et `hotspots` : la pièce aux G verticaux max, celle aux G min, celle aux G latéraux max et la plus lente hors freins, avec index, tuile et vitesse.
+> 3. **Modèle** (`planners/speed.ts`). Il suit la forme de `Vehicle.TrackMotion.cpp` (gravité selon la pente, traînées linéaire `v/4096` et quadratique `(v>>8)²/16/masse`), ramenée à la distance : `Δv² = K·descente(niveaux) − (k1·v + k2·v²)·longueur(tuiles)`, v en mph. La chaîne maintient au moins la vitesse du lift, les freins plafonnent à leur consigne (`brakeSpeed` × 2,25 mph : rangé ÷ 2 et relu × 2 dans `TrackElement.cpp`, comparé à velocity >> 16), la station repart à `stationSpeed`. Valeurs par défaut K = 172, k1 = 0,15, k2 = 0,0015 : Frightmare atteint 101 km/h au bas de la chute (mesuré : 101) sans caler nulle part. Chaque `coaster_test` réussi recale K, k1, k2, `invExtra` (hauteur supplémentaire au sommet des inversions, 0 par défaut) et la vitesse du lift. Pour cela, il simule tout le circuit depuis la station et minimise l'écart moyen aux vitesses mesurées (recherche sur grille). Le nouveau calage n'est gardé que s'il fait mieux que l'ancien. Un ajustement pièce à pièce par moindres carrés donnait 21 km/h d'écart moyen, car à vitesse 4 une frame couvre 4 ticks et la « vitesse d'entrée » tombe n'importe où dans la pièce. La simulation globale donne 5,4 km/h sur Frightmare (K = 170, k1 = 0, k2 = 0,002). Le résultat est gardé par type d'attraction dans `<dossier utilisateur>/claude-speed-model.json`, avec l'erreur moyenne en km/h.
+>
+> **Fenêtres de vitesse minimale.** Pour chaque inversion, on relève aussi la vitesse la plus basse dans l'élément : la pièce, puis les suivantes tant que le train est à l'envers (`elementMinSpeed`). Le seuil est la médiane des designs RCT2 : tire-bouchon 44 km/h, demi-boucle 37, boucle verticale 48. Un avertissement « TROP LENT AU SOMMET » part sous 80 % de cette médiane. Mesuré en jeu : un grand tire-bouchon pris à 63 km/h passe son sommet à 28 km/h, alors que le modèle en prédisait 41 ; pris à 78 km/h, il passe à 52.
+>
+> **Modifier la piste d'un circuit en essai.** `coaster_build_plan`, `coaster_append`, `coaster_undo` et `coaster_test` ferment deux fois l'attraction avant d'agir. Retirer une pièce sous un train en essai le fait s'écraser, et l'indicateur d'accident bloque les essais suivants tant qu'on n'a pas fermé deux fois.
+>
+> **Fenêtres d'entrée.** Pour chaque genre d'élément (nom de pièce sans le côté : `verticalLoop`, `corkscrewUp`, `bankedQuarterTurn3Tiles`, `halfBankedHelixDownSmall`…), le modèle calcule la vitesse d'entrée sur les 186 circuits fermés de RCT2 et en garde les 10e, 50e et 90e centiles. Exemples avec les valeurs par défaut : boucle verticale 64-78 km/h, tire-bouchon 51-65, demi-boucle 68-74, grande demi-boucle 90-95, virage incliné de 3 tuiles 34-67. Les éléments propres à OpenRCT2 empruntent la fenêtre de l'élément classique le plus proche : zero-g roll → tonneau, grand zero-g → boucle verticale, grand tire-bouchon → tire-bouchon, demi-boucle moyenne → demi-boucle.
+>
+> **Retour dans `coaster_build_plan`.** `speeds` donne la vitesse au curseur, puis par macro l'entrée, la sortie et le minimum (km/h), le niveau de fin et un calage éventuel, ainsi que l'entrée et la sortie de la fermeture. Des `warnings` signalent un « CALAGE probable » (vitesse nulle dans la pièce), un élément « TROP RAPIDE » (au-dessus de p90 × 1,15 + 3 mph) ou « TROP LENT » (sous p10 × 0,85 − 2 mph), avec la plage relevée. `coaster_describe` affiche les vitesses estimées de la référence. La macro `hill { height }` (colline) sert à freiner le train avant un élément.
+
 - `ride.set_status(testing)` puis laisser tourner (13.6 du temps de jeu).
 - Rapport structuré : excitation, intensité, nausée (÷100), vitesse max, longueur, G vertical/latéral max, nombre de descentes, **statut du test** (terminé, bloqué, calage), **localisation des problèmes** (pièce où le train cale, virage à G latéral excessif, collision…). `[À VÉRIFIER]` quelles propriétés de `Ride` exposent ces valeurs ; sinon, les approcher par simulation côté serveur ou par échantillonnage de la position/vitesse des wagons (`map.getAllEntities('car')`) pendant le test.
 - Accélération du temps : `[À VÉRIFIER — spike S7]` en mode A, vitesse de jeu réglable depuis le plugin ? Sinon prévoir la patience (temps réel) ou le recours au cheat de test rapide s'il existe.
@@ -824,7 +858,8 @@ Chaque macro est compilé en pièces par le planificateur ; échec = erreur stru
 - Atteindre des notes élevées (heuristiques à calibrer sur des exemples réels).
 - Intégrer le circuit au terrain (tunnels, passages sous des chemins) : contraintes supplémentaires dans la recherche.
 - Esthétique du tracé.
-- Types exotiques (inversions complexes, multi-lancements).
+- Types exotiques (multi-lancements, pièces volantes, quarts de boucle à 90° comme ceux de Frightmare : seulement par `piece`).
+- La fermeture A* pénalise les S-bends (coût +3) sans les interdire ; une fermeture courte depuis une pose mal orientée peut encore en contenir.
 
 Commencer par **un seul type de coaster** (acier classique à chaîne) sur terrain plat.
 

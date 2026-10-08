@@ -282,7 +282,27 @@ function pieceOf(it: TrackIterator): TrackPieceInfo | null {
     const p = it.position;
     const seg = it.segment;
     if (!seg) return null;
-    return { type: seg.type, x: worldToTile(p.x), y: worldToTile(p.y), z: p.z, direction: (p.direction & 3) as TrackPieceInfo["direction"] };
+    const piece: TrackPieceInfo = { type: seg.type, x: worldToTile(p.x), y: worldToTile(p.y), z: p.z, direction: (p.direction & 3) as TrackPieceInfo["direction"] };
+    // Chaîne et vitesse de frein : portées par l'élément de tuile de l'origine (séquence 0) ; la vitesse du train en dépend.
+    const el = originElement(p.x, p.y, p.z, seg.type);
+    if (el) {
+        if (el.hasChainLift) piece.chain = true;
+        if (el.brakeBoosterSpeed !== null && el.brakeBoosterSpeed > 0) piece.brakeSpeed = el.brakeBoosterSpeed;
+    }
+    return piece;
+}
+
+function originElement(x: number, y: number, z: number, type: number): TrackElement | null {
+    const els = map.getTile(worldToTile(x), worldToTile(y)).elements;
+    let best: TrackElement | null = null;
+    for (let i = 0; i < els.length; i++) {
+        const e = els[i];
+        if (e.type !== "track") continue;
+        const t = e as TrackElement;
+        if (t.trackType !== type || t.sequence !== 0) continue;
+        if (!best || Math.abs(t.baseZ - z) < Math.abs(best.baseZ - z)) best = t;
+    }
+    return best;
 }
 
 const pieceKey = (p: TrackPieceInfo | null): string => (p ? `${p.x},${p.y},${p.z},${p.direction},${p.type}` : "");

@@ -14,6 +14,7 @@ import {
     type ObjectsListResult,
     type ObjectsLoadParams,
     type ObjectsLoadResult,
+    type PieceSample,
     type TimeRunParams,
     type TimeStatus,
 } from "@openrct2-claude/protocol";
@@ -249,17 +250,73 @@ export function* run(params: TimeRunParams): Job {
         yield* act("gamesetspeed", { speed }, false);
     }
     if (context.paused) context.paused = false;
+    const sampleRide = params.sample && isInt(params.sample.ride) ? params.sample.ride : null;
+    const samples = new Map<string, PieceSample>();
     const start = date.ticksElapsed;
     while (date.ticksElapsed - start < ticks) {
         if (context.mode !== "normal") fail("BUSY", "Carte changée pendant time.run.");
         if (context.paused) context.paused = false;
+        if (sampleRide !== null) sampleTrain(sampleRide, samples);
         yield NEXT_FRAME;
     }
     const ticksRun = date.ticksElapsed - start;
     if (context.gameSpeed !== previousSpeed) yield* act("gamesetspeed", { speed: previousSpeed }, false);
     const pauseAfter = params.pauseAfter ?? wasPaused;
     if (pauseAfter) context.paused = true;
-    return { ...timeStatus(), ticksRun };
+    if (sampleRide === null) return { ...timeStatus(), ticksRun };
+    // Pièces vues seulement par les voitures suivantes : pas de vitesse de tête (JSON n'a pas d'Infinity).
+    const out = Array.from(samples.values()).map((s) => ({
+        ...s,
+        vFirst: Math.max(s.vFirst, 0),
+        vMin: isFinite(s.vMin) ? s.vMin : 0,
+        gVertMax: isFinite(s.gVertMax) ? s.gVertMax : 0,
+        gVertMin: isFinite(s.gVertMin) ? s.gVertMin : 0,
+    }));
+    return { ...timeStatus(), ticksRun, samples: out };
+}
+
+/** Vitesse interne (mph × 65536) en mph. */
+const MPH = 65536;
+
+function pieceSample(map: Map<string, PieceSample>, loc: CarTrackLocation): PieceSample {
+    const key = `${loc.x},${loc.y},${loc.z},${loc.direction},${loc.trackType}`;
+    let s = map.get(key);
+    if (!s) {
+        s = { x: loc.x, y: loc.y, z: loc.z, direction: loc.direction, trackType: loc.trackType, n: 0, vFirst: -1, vMin: Infinity, vMax: 0, gVertMax: -Infinity, gVertMin: Infinity, gLatMax: 0 };
+        map.set(key, s);
+    }
+    return s;
+}
+
+/** Relevé d'une frame : vitesse de la tête du premier train sur sa pièce, G de chaque voiture sur la sienne. */
+function sampleTrain(rideId: number, map: Map<string, PieceSample>): void {
+    const ride = map_getRide(rideId);
+    if (!ride || !ride.vehicles.length) return;
+    let car = map_getCar(ride.vehicles[0]);
+    if (!car) return;
+    const v = Math.abs(car.velocity) / MPH;
+    const head = pieceSample(map, car.trackLocation);
+    head.n++;
+    if (head.vFirst < 0) head.vFirst = v;
+    head.vMin = Math.min(head.vMin, v);
+    head.vMax = Math.max(head.vMax, v);
+    for (let i = 0; car && i < 16; i++) {
+        const s = pieceSample(map, car.trackLocation);
+        const g = car.gForces;
+        s.gVertMax = Math.max(s.gVertMax, g.verticalG / 100);
+        s.gVertMin = Math.min(s.gVertMin, g.verticalG / 100);
+        s.gLatMax = Math.max(s.gLatMax, Math.abs(g.lateralG) / 100);
+        car = car.nextCarOnTrain === null ? null : map_getCar(car.nextCarOnTrain);
+    }
+}
+
+function map_getRide(id: number): Ride | null {
+    return map.getRide(id);
+}
+
+function map_getCar(id: number): Car | null {
+    const e = map.getEntity(id);
+    return e && e.type === "car" ? (e as Car) : null;
 }
 
 // ---------------------------------------------------------------------------

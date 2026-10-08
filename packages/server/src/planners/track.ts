@@ -52,6 +52,8 @@ export interface PlannedPiece extends TrackPieceInfo {
     name: string;
     chain?: boolean;
     brakeSpeed?: number;
+    /** Indice de la macro qui a produit la pièce (compileMacros). */
+    macro?: number;
 }
 
 export const poseKey = (p: TrackPose): string => `${p.x},${p.y},${p.z},${p.rot},${p.slope},${p.bank}`;
@@ -429,15 +431,27 @@ export function slopeRun(
 
 export type TurnSide = "left" | "right";
 
+export type InversionKind = "loop" | "immelmann" | "dive_loop" | "corkscrew" | "zero_g_roll" | "barrel_roll";
+export const INVERSION_KINDS: readonly InversionKind[] = ["loop", "immelmann", "dive_loop", "corkscrew", "zero_g_roll", "barrel_roll"];
+
 export type Macro =
     | { op: "straight"; length: number }
-    | { op: "lift"; height: number }
+    | { op: "lift"; height: number; steep?: boolean }
     | { op: "climb"; height: number; steep?: boolean }
     | { op: "drop"; height: number; steep?: boolean }
-    | { op: "turn"; dir: TurnSide; size?: "small" | "medium"; banked?: boolean; quarters?: number; slope?: "flat" | "up" | "down" }
+    | { op: "hill"; height: number; steep?: boolean }
+    | {
+          op: "turn";
+          dir: TurnSide;
+          size?: "small" | "medium" | "large";
+          banked?: boolean;
+          quarters?: number;
+          slope?: "flat" | "up" | "down" | "steep_up" | "steep_down";
+      }
     | { op: "helix"; dir: TurnSide; quarters: number; down?: boolean; size?: "small" | "large" }
     | { op: "s_bend"; dir: TurnSide }
     | { op: "loop"; dir: TurnSide }
+    | { op: "inversion"; kind: InversionKind; dir: TurnSide; size?: "small" | "medium" | "large" }
     | { op: "brakes"; length: number; speed?: number }
     | { op: "block_brakes" }
     | { op: "photo" }
@@ -456,27 +470,90 @@ interface PieceRequest {
     brakeSpeed?: number;
 }
 
-function findTurn(table: SegmentTable, ride: RideTrackInfo, m: Extract<Macro, { op: "turn" }>): TrackSegmentInfo | null {
-    const slope = m.slope === "up" ? PITCH.up25 : m.slope === "down" ? PITCH.down25 : PITCH.flat;
-    const bank = m.banked ? (m.dir === "left" ? ROLL.left : ROLL.right) : ROLL.none;
+const TURN_SLOPE = { flat: PITCH.flat, up: PITCH.up25, down: PITCH.down25, steep_up: PITCH.up60, steep_down: PITCH.down60 } as const;
+
+/** Pièces d'un quart de tour (1 pièce, ou 2 pour size 'large' : huitième vers la diagonale puis retour à l'orthogonale). */
+function findTurn(table: SegmentTable, ride: RideTrackInfo, m: Extract<Macro, { op: "turn" }>): TrackSegmentInfo[] | null {
+    const slope = TURN_SLOPE[m.slope ?? "flat"];
+    const steep = slope === PITCH.up60 || slope === PITCH.down60;
+    // Les virages raides (1 tuile, 60°) n'existent pas inclinés.
+    const bank = m.banked && !steep ? (m.dir === "left" ? ROLL.left : ROLL.right) : ROLL.none;
+    const same = (s: TrackSegmentInfo) =>
+        pieceAllowed(ride, s) && !s.flags?.isHelix && s.turnDirection === m.dir && s.beginSlope === slope && s.endSlope === slope && s.beginBank === bank && s.endBank === bank;
+    const quarterEnd = m.dir === "left" ? 3 : 1;
+    if (steep) {
+        const s = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === quarterEnd);
+        return s ? [s] : null;
+    }
+    if (m.size === "large") {
+        // leftEighthToDiag (0 → 7) + leftEighthToOrthogonal (4 → 0) ; rightEighthToDiag (0 → 4) + rightEighthToOrthogonal (4 → 1).
+        const toDiag = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === (m.dir === "left" ? 7 : 4));
+        const toOrth = table.all().find((s) => same(s) && s.beginDirection === 4 && s.endDirection === (m.dir === "left" ? 0 : 1));
+        return toDiag && toOrth ? [toDiag, toOrth] : null;
+    }
     const span = m.size === "small" ? 32 : 64;
-    return (
-        table
-            .all()
-            .find(
-                (s) =>
-                    pieceAllowed(ride, s) &&
-                    !s.flags?.isHelix &&
-                    s.turnDirection === m.dir &&
-                    s.beginDirection === 0 &&
-                    s.endDirection === (m.dir === "left" ? 3 : 1) &&
-                    s.beginSlope === slope &&
-                    s.endSlope === slope &&
-                    s.beginBank === bank &&
-                    s.endBank === bank &&
-                    Math.abs(s.endX) === span,
-            ) ?? null
-    );
+    const s = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === quarterEnd && Math.abs(s.endX) === span);
+    return s ? [s] : null;
+}
+
+/**
+ * Suites de pièces candidates pour une inversion complète (entrée et sortie non inversées), par ordre de préférence.
+ * Appariements relevés dans les designs de RCT2 : tire-bouchon gauche-haut + droit-bas, grande boucle droite-haut +
+ * gauche-bas, rouleaux et vrilles du même côté, Immelmann = demi-boucle + demi-tonneau (Frightmare).
+ */
+export function inversionCandidates(kind: InversionKind, dir: TurnSide, size: "small" | "medium" | "large" = "large"): string[][] {
+    const d = dir;
+    const o = dir === "left" ? "right" : "left";
+    const halfUp = size === "small" ? "halfLoopUp" : `${d}${size === "large" ? "Large" : "Medium"}HalfLoopUp`;
+    const halfDown = size === "small" ? "halfLoopDown" : `${d}${size === "large" ? "Large" : "Medium"}HalfLoopDown`;
+    switch (kind) {
+        case "loop":
+            if (size === "small") return [[`${d}VerticalLoop`]];
+            return [[halfUp, `${o}${size === "large" ? "Large" : "Medium"}HalfLoopDown`]];
+        case "immelmann":
+            return [
+                [halfUp, `${d}BarrelRollDownToUp`],
+                [halfUp, `${d}TwistUpToDown`],
+                [halfUp, `${d}CorkscrewDown`],
+            ];
+        case "dive_loop":
+            return [
+                [`${d}BarrelRollUpToDown`, halfDown],
+                [`${d}TwistDownToUp`, halfDown],
+                [`${d}CorkscrewUp`, halfDown],
+            ];
+        case "corkscrew":
+            return size === "large" ? [[`${d}LargeCorkscrewUp`, `${o}LargeCorkscrewDown`]] : [[`${d}CorkscrewUp`, `${o}CorkscrewDown`]];
+        case "zero_g_roll":
+            return size === "large" ? [[`${d}LargeZeroGRollUp`, `${d}LargeZeroGRollDown`]] : [[`${d}ZeroGRollUp`, `${d}ZeroGRollDown`]];
+        case "barrel_roll":
+            return [
+                [`${d}BarrelRollUpToDown`, `${d}BarrelRollDownToUp`],
+                [`${d}TwistDownToUp`, `${d}TwistUpToDown`],
+            ];
+    }
+}
+
+/** Inversions (genre × taille) que ce type d'attraction peut construire. */
+export function availableInversions(table: SegmentTable, ride: RideTrackInfo): string[] {
+    const out: string[] = [];
+    for (const kind of INVERSION_KINDS) {
+        // Une taille ne compte que si elle donne d'autres pièces que la taille inférieure (corkscrew medium = small).
+        const seen = new Set<string>();
+        const sizes = (["small", "medium", "large"] as const).filter((size) => {
+            const ok = inversionCandidates(kind, "left", size).find((names) =>
+                names.every((n) => {
+                    const s = table.byName(n);
+                    return !!s && pieceAllowed(ride, s);
+                }),
+            );
+            if (!ok || seen.has(ok.join("+"))) return false;
+            seen.add(ok.join("+"));
+            return true;
+        });
+        if (sizes.length) out.push(`${kind}(${sizes.join("/")})`);
+    }
+    return out;
 }
 
 function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: TrackPose): PieceRequest[] | string {
@@ -510,23 +587,51 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
             const lv = level();
             if (typeof lv === "string") return lv;
             const dz = (m.op === "drop" ? -1 : 1) * m.height * 16;
-            const steep = m.op === "lift" ? ride.supportsSteepLift : !!m.steep;
+            // Lift : raide (60°) si le type le permet, sauf steep: false (lift 25° classique, 1 niveau par tuile).
+            const steep = m.op === "lift" ? (m.steep ?? ride.supportsSteepLift) && ride.supportsSteepLift : !!m.steep;
+            if (m.op === "lift" && m.steep && !ride.supportsSteepLift) return `${ride.name} n'a pas de chaîne raide (60°) : lift sans steep`;
             const run = slopeRun(table, ride, PITCH.flat, dz, { steep, chain: m.op === "lift" });
             if (!run) return `aucune suite de pièces droites ne fait ${m.op === "drop" ? "descendre" : "monter"} de ${m.height} niveau(x) exactement`;
             return [...lv, ...run.map((seg) => ({ seg, chain: m.op === "lift" && climbs(seg) }))];
         }
+        case "hill": {
+            // Colline (camelback) : montée sur l'élan puis descente de la même hauteur, sans palier au sommet.
+            const lv = level();
+            if (typeof lv === "string") return lv;
+            const up = slopeRun(table, ride, PITCH.flat, m.height * 16, { steep: !!m.steep, chain: false });
+            const down = slopeRun(table, ride, PITCH.flat, -m.height * 16, { steep: !!m.steep, chain: false });
+            if (!up || !down) return `aucune colline de ${m.height} niveau(x) exactement`;
+            return [...lv, ...up.map((seg) => ({ seg })), ...down.map((seg) => ({ seg }))];
+        }
         case "turn": {
-            const seg = findTurn(table, ride, m);
-            if (!seg) return `aucun virage ${m.dir} ${m.size ?? "medium"}${m.banked ? " incliné" : ""}${m.slope && m.slope !== "flat" ? ` en ${m.slope}` : ""} pour ${ride.name}`;
-            return Array.from({ length: m.quarters ?? 1 }, () => ({ seg }));
+            const segs = findTurn(table, ride, m);
+            if (!segs) {
+                const steep = m.slope === "steep_up" || m.slope === "steep_down";
+                return `aucun virage ${m.dir} ${steep ? "1 tuile" : m.size ?? "medium"}${m.banked && !steep ? " incliné" : ""}${m.slope && m.slope !== "flat" ? ` en ${m.slope}` : ""} pour ${ride.name}`;
+            }
+            return Array.from({ length: m.quarters ?? 1 }, () => segs.map((seg) => ({ seg }))).flat();
+        }
+        case "inversion": {
+            // Sans taille : la plus grande disponible (large, puis medium, puis small).
+            const sizes = m.size ? [m.size] : (["large", "medium", "small"] as const);
+            for (const size of sizes) {
+                for (const names of inversionCandidates(m.kind, m.dir, size)) {
+                    const segs = names.map((n) => table.byName(n));
+                    if (segs.every((s): s is TrackSegmentInfo => !!s && pieceAllowed(ride, s))) return segs.map((seg) => ({ seg }));
+                }
+            }
+            const avail = availableInversions(table, ride);
+            return `inversion ${m.kind}${m.size ? ` ${m.size}` : ""} indisponible pour ${ride.name} (possibles : ${avail.length ? avail.join(", ") : "aucune"})`;
         }
         case "helix": {
             const d = m.dir === "left" ? "left" : "right";
             const ud = m.down === false ? "Up" : "Down";
             const out: PieceRequest[] = [];
             let q = m.quarters;
-            const half = named(`${d}HalfBankedHelix${ud}${m.size === "large" ? "Large" : "Small"}`);
-            const quarter = m.size === "large" ? named(`${d}QuarterBankedHelixLarge${ud}`) : null;
+            // Large par défaut : l'hélice serrée (small, rayon 3 tuiles) n'est à sa place qu'à basse vitesse, en fin de parcours.
+            const large = m.size !== "small";
+            const half = named(`${d}HalfBankedHelix${ud}${large ? "Large" : "Small"}`);
+            const quarter = large ? named(`${d}QuarterBankedHelixLarge${ud}`) : null;
             if (typeof half === "string") return half;
             while (q >= 2) {
                 out.push({ seg: half });
@@ -561,12 +666,14 @@ export function compileMacros(table: SegmentTable, ride: RideTrackInfo, start: T
     const pieces: PlannedPiece[] = [];
     const errors: { macro: number; message: string }[] = [];
     let pose = start;
+    let current = 0;
     const push = (seg: TrackSegmentInfo, extra: { chain?: boolean; brakeSpeed?: number }) => {
         const piece = originAt(pose, seg);
-        pieces.push({ ...piece, name: SegmentTable.nameOf(seg.type), ...extra });
+        pieces.push({ ...piece, name: SegmentTable.nameOf(seg.type), ...extra, macro: current });
         pose = endPose(piece, seg);
     };
     macros.forEach((m, i) => {
+        current = i;
         const reqs = expandMacro(table, ride, m, pose);
         if (typeof reqs === "string") {
             errors.push({ macro: i, message: reqs });
@@ -586,6 +693,119 @@ export function compileMacros(table: SegmentTable, ride: RideTrackInfo, start: T
         }
     });
     return { pieces, end: pose, errors };
+}
+
+// ---------------------------------------------------------------------------
+// Mesures et relecture d'un tracé (comparaison avec un circuit de référence)
+// ---------------------------------------------------------------------------
+
+export interface LayoutStats {
+    pieces: number;
+    /** Longueur de piste en tuiles (somme des longueurs de segments). */
+    lengthTiles: number;
+    footprint: { x1: number; y1: number; x2: number; y2: number; size: string };
+    /** Tuiles de piste par tuile d'emprise : plus c'est haut, plus le tracé est compact et s'enroule sur lui-même. */
+    density: number;
+    minLevel: number;
+    maxLevel: number;
+    liftPieces?: number;
+    inversions: number;
+}
+
+/** Une inversion compte une fois : la pièce qui fait passer à l'envers (ou la boucle entière). */
+const startsInversion = (s: TrackSegmentInfo): boolean => (!!s.flags?.isInversion || s.endBank === ROLL.upsideDown) && s.beginBank !== ROLL.upsideDown;
+
+export function layoutStats(table: SegmentTable, pieces: (TrackPieceInfo & { chain?: boolean })[], knowsChain = true): LayoutStats {
+    let length = 0;
+    let inversions = 0;
+    let lift = 0;
+    const blocks: { x: number; y: number; z: number }[] = [];
+    for (const p of pieces) {
+        const seg = table.get(p.type);
+        if (!seg) continue;
+        length += Math.max(seg.length, 1) / 32;
+        if (startsInversion(seg)) inversions++;
+        if (p.chain) lift++;
+        blocks.push(...pieceElements(p, seg));
+    }
+    const xs = blocks.map((b) => b.x);
+    const ys = blocks.map((b) => b.y);
+    const zs = blocks.map((b) => b.z);
+    const fp = blocks.length ? { x1: Math.min(...xs), y1: Math.min(...ys), x2: Math.max(...xs), y2: Math.max(...ys) } : { x1: 0, y1: 0, x2: -1, y2: -1 };
+    const w = fp.x2 - fp.x1 + 1;
+    const h = fp.y2 - fp.y1 + 1;
+    return {
+        pieces: pieces.length,
+        lengthTiles: Math.round(length),
+        footprint: { ...fp, size: `${w}×${h}` },
+        density: w * h > 0 ? Math.round((length / (w * h)) * 100) / 100 : 0,
+        minLevel: blocks.length ? Math.min(...zs) / 16 : 0,
+        maxLevel: blocks.length ? Math.max(...zs) / 16 : 0,
+        liftPieces: knowsChain ? lift : undefined,
+        inversions,
+    };
+}
+
+/**
+ * Séquence lisible par groupes de pièces identiques, avec la hauteur au début et à la fin de chaque groupe :
+ * « 17×up25⛓ L1→18, flatToDown25 L18… ». Sert à relire un circuit de référence pour en reprendre le style.
+ */
+export function describeSequence(
+    table: SegmentTable,
+    pieces: (TrackPieceInfo & { chain?: boolean; name?: string })[],
+    baseZ = 0,
+    /** Vitesse d'entrée de chaque pièce (km/h), affichée au début de chaque groupe. */
+    speedsKmh?: number[],
+): string {
+    const out: string[] = [];
+    const lvl = (z: number) => Math.round(((z - baseZ) / 16) * 2) / 2;
+    let i = 0;
+    while (i < pieces.length) {
+        let j = i;
+        while (j + 1 < pieces.length && pieces[j + 1].type === pieces[i].type && !!pieces[j + 1].chain === !!pieces[i].chain) j++;
+        const a = table.get(pieces[i].type);
+        const b = table.get(pieces[j].type);
+        const z0 = a ? lvl(pieces[i].z + a.beginZ) : 0;
+        const z1 = b ? lvl(pieces[j].z + b.endZ) : z0;
+        const n = j - i + 1;
+        const speed = speedsKmh ? ` @${speedsKmh[i] < 0 ? "?" : speedsKmh[i]}` : "";
+        out.push(`${n > 1 ? `${n}×` : ""}${SegmentTable.nameOf(pieces[i].type)}${pieces[i].chain ? "⛓" : ""} L${z0}${z1 !== z0 ? `→${z1}` : ""}${speed}`);
+        i = j + 1;
+    }
+    return out.join(", ");
+}
+
+/**
+ * Défauts de style d'un plan, signalés sans bloquer : lift en courbe, virage serré ou non incliné pris à grande vitesse.
+ * La vitesse est estimée par la hauteur perdue depuis le point le plus haut atteint avant la pièce (frottements ignorés).
+ */
+export function planWarnings(table: SegmentTable, pieces: PlannedPiece[], peakBefore: number): string[] {
+    const out = new Map<string, string>();
+    let peak = peakBefore;
+    const isTurn = (s: TrackSegmentInfo | undefined) => s?.turnDirection === "left" || s?.turnDirection === "right";
+    const curvedLift = pieces.filter((p) => p.chain && isTurn(table.get(p.type)));
+    if (curvedLift.length) {
+        out.set("lift", `Chaîne posée sur ${curvedLift.length} pièce(s) en virage (${curvedLift[0].name}) : un lift droit est plus lisible. Un lift 25° monte d'1 niveau par tuile, c'est normal ; la compacité vient du reste du tracé qui s'enroule autour et sous le lift.`);
+    }
+    for (const p of pieces) {
+        const seg = table.get(p.type);
+        if (!seg) continue;
+        const zBegin = p.z + seg.beginZ;
+        peak = Math.max(peak, zBegin);
+        const lost = (peak - zBegin) / 16;
+        const turning = isTurn(seg) && !seg.flags?.isInversion;
+        const steep = isSteep(seg.beginSlope) || isSteep(seg.endSlope);
+        if (turning && !steep && !p.chain && lost >= 8 && /3Tile|HelixUpSmall|HelixDownSmall/.test(p.name) && !out.has("tight")) {
+            out.set("tight", `Virage serré ${p.name} en (${p.x},${p.y}) pris environ ${lost} niveaux sous le point haut : G élevés probables. Préfère size 'medium'/'large' (turn) ou une hélice large, ou ralentis avant (montée).`);
+        }
+        if (turning && !steep && !p.chain && lost >= 6 && seg.beginBank === 0 && seg.endBank === 0 && !out.has("unbanked")) {
+            out.set("unbanked", `Virage non incliné ${p.name} en (${p.x},${p.y}) à grande vitesse (~${lost} niveaux sous le point haut) : G latéraux élevés ; mets banked: true.`);
+        }
+        peak = Math.max(peak, p.z + seg.endZ);
+        // Après des freins, le train repart lentement : l'élan se compte depuis la sortie des freins (+2 niveaux de marge).
+        if (/[bB]rakes$/.test(p.name)) peak = p.z + seg.endZ + 32;
+    }
+    return [...out.values()];
 }
 
 // ---------------------------------------------------------------------------
@@ -666,7 +886,8 @@ function pieceCost(seg: TrackSegmentInfo): number {
     // Virages non inclinés : G latéraux élevés à vitesse de croisière (rapport de coaster_test).
     if (seg.turnDirection !== "straight" && seg.beginBank === 0 && seg.endBank === 0) c += 1.5;
     if (seg.turnDirection !== "straight" && Math.abs(seg.endX) <= 32 && Math.abs(seg.endY) <= 32) c += 0.8;
-    if (seg.endY !== 0 && seg.endDirection === seg.beginDirection) c += 1;
+    // S-bends (décalage latéral sans changer de direction) : laids et brusques ; en dernier recours seulement.
+    if (seg.endY !== 0 && seg.endDirection === seg.beginDirection) c += 3;
     return c;
 }
 

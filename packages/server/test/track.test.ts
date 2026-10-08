@@ -4,13 +4,17 @@ import {
     Occupancy,
     PITCH,
     SegmentTable,
+    availableInversions,
     compileMacros,
+    describeSequence,
     endPose,
     findTransition,
     originAt,
     pieceElements,
     pieceEndingAt,
     planClosure,
+    planWarnings,
+    layoutStats,
     poseKey,
     rideTrackInfo,
     searchCatalog,
@@ -108,6 +112,75 @@ describe("transitions et macros", () => {
         const junior = rideTrackInfo(rideTypeByName("junior_roller_coaster"))!;
         const r = compileMacros(table, junior, { x: 10, y: 10, z: 64, rot: 0, slope: 0, bank: 0 }, [{ op: "loop", dir: "left" }]);
         expect(r.errors.length).toBe(1);
+    });
+});
+
+describe("éléments de style (inversions, virages larges et raides)", () => {
+    const twister = rideTrackInfo(rideTypeByName("twister_roller_coaster"))!;
+    const start: TrackPose = { x: 40, y: 40, z: 64, rot: 2, slope: 0, bank: 0 };
+    const names = (r: ReturnType<typeof compileMacros>) => r.pieces.map((p) => p.name);
+
+    it("compile les inversions complètes, la plus grande taille par défaut", () => {
+        const r = compileMacros(table, twister, start, [
+            { op: "inversion", kind: "loop", dir: "right" },
+            { op: "inversion", kind: "immelmann", dir: "left" },
+            { op: "inversion", kind: "dive_loop", dir: "right" },
+            { op: "inversion", kind: "corkscrew", dir: "left" },
+            { op: "inversion", kind: "zero_g_roll", dir: "right" },
+            { op: "inversion", kind: "barrel_roll", dir: "left" },
+            { op: "level" },
+        ]);
+        expect(r.errors).toEqual([]);
+        expect(names(r)).toContain("rightLargeHalfLoopUp");
+        expect(names(r)).toContain("leftLargeHalfLoopDown");
+        expect(names(r)).toContain("leftBarrelRollDownToUp");
+        expect(names(r)).toContain("leftLargeCorkscrewUp");
+        expect(names(r)).toContain("rightLargeCorkscrewDown");
+        expect(names(r)).toContain("rightLargeZeroGRollUp");
+        expect(r.end).toMatchObject({ slope: 0, bank: 0 });
+        expect(layoutStats(table, r.pieces).inversions).toBe(6);
+    });
+
+    it("respecte une taille demandée et signale les inversions disponibles", () => {
+        const small = compileMacros(table, twister, start, [{ op: "inversion", kind: "loop", dir: "left", size: "small" }]);
+        expect(names(small)).toContain("leftVerticalLoop");
+        const junior = rideTrackInfo(rideTypeByName("junior_roller_coaster"))!;
+        const r = compileMacros(table, junior, start, [{ op: "inversion", kind: "corkscrew", dir: "left" }]);
+        expect(r.errors[0].message).toMatch(/indisponible/);
+        expect(availableInversions(table, twister).join(" ")).toMatch(/immelmann\(.*large/);
+        expect(availableInversions(table, twister)).toContain("corkscrew(small/large)");
+    });
+
+    it("tourne large par la diagonale et en chute raide sur 1 tuile", () => {
+        const large = compileMacros(table, twister, start, [{ op: "turn", dir: "left", banked: true, size: "large", quarters: 2 }, { op: "level" }]);
+        expect(large.errors).toEqual([]);
+        expect(names(large).filter((n) => /Eighth/.test(n)).length).toBe(4);
+        expect(large.end.rot).toBe((start.rot + 2) & 3);
+        const dive = compileMacros(table, twister, { ...start, z: 640 }, [{ op: "turn", dir: "right", slope: "steep_down", quarters: 2 }, { op: "level" }]);
+        expect(dive.errors).toEqual([]);
+        expect(names(dive)).toContain("rightQuarterTurn1TileDown60");
+    });
+
+    it("signale un lift en courbe et un virage serré à grande vitesse", () => {
+        const r = compileMacros(table, twister, start, [
+            { op: "piece", name: "flatToUp25", chain: true },
+            { op: "piece", name: "leftQuarterTurn5TilesUp25", chain: true },
+            { op: "lift", height: 14, steep: false },
+            { op: "drop", height: 14, steep: true },
+            { op: "turn", dir: "left", size: "small", banked: true, quarters: 2 },
+        ]);
+        expect(r.errors).toEqual([]);
+        const w = planWarnings(table, r.pieces, start.z).join(" | ");
+        expect(w).toMatch(/virage/);
+        expect(w).toMatch(/serré/);
+        // Après un frein de bloc, le même virage serré est pris lentement : pas d'alerte.
+        const slow = compileMacros(table, twister, { ...start, z: 640 }, [{ op: "block_brakes" }, { op: "turn", dir: "left", size: "small", banked: true, slope: "down", quarters: 2 }]);
+        expect(planWarnings(table, slow.pieces, 640 + 160).join(" ")).not.toMatch(/serré/);
+    });
+
+    it("décrit une séquence par groupes avec les hauteurs", () => {
+        const r = compileMacros(table, twister, start, [{ op: "lift", height: 4 }]);
+        expect(describeSequence(table, r.pieces, start.z)).toBe("flatToUp25⛓ L0→0.5, 3×up25⛓ L0.5→3.5, up25ToFlat⛓ L3.5→4");
     });
 });
 
