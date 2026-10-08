@@ -3,6 +3,7 @@ import * as build from "./build";
 import * as mapH from "./map";
 import * as misc from "./misc";
 import * as parkH from "./park";
+import * as ratings from "./ratings";
 import * as ride from "./ride";
 import * as session from "./session";
 import * as staff from "./staff";
@@ -53,6 +54,7 @@ export const handlers: Record<string, Handler> = {
     "track.segment": ride.segment,
     "track.segments": ride.segments,
     "track.circuit": ride.circuit,
+    "track.rating_scan": ratings.scan,
     "scenery.place_small": build.placeSmall,
     "scenery.place_large": build.placeLarge,
     "scenery.place_wall": build.placeWall,

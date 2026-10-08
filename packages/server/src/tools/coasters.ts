@@ -15,6 +15,7 @@ import {
     type Direction,
     type ObjectInfo,
     type PieceSample,
+    type RideDetail,
     type TileXY,
     type TrackPieceInfo,
     type TrackSegmentInfo,
@@ -66,11 +67,26 @@ import {
     simulate,
     speedWindows,
     windowFor,
+    type MeasuredPiece,
     type PieceSpeed,
     type SpeedModel,
     type SpeedWindow,
 } from "../planners/speed.js";
+import {
+    ENTRY_FLAG,
+    RIDE_FLAG_REVERSED,
+    countTrackFeatures,
+    ratingLevers,
+    ratingsDataFor,
+    resolveSpeeds,
+    segmentUnits,
+    shelterFromBlocks,
+    shelterPoints,
+    type RatingInputs,
+} from "../planners/ratings.js";
+import { circuitFingerprint, elementSequence, gSections, ratingGaps, speedProfile, topLevers, type CoasterMeasure, type StoredTerm } from "../planners/compare.js";
 import type { InverseOp } from "../state/journal.js";
+import { MeasureStore } from "../state/measures.js";
 import { BUDGET, defineTool, result, toolError, zDirection, zDryRun, type ToolContext } from "./context.js";
 import { chunks, placePathTiles, routeToNetwork } from "./helpers.js";
 
@@ -264,6 +280,174 @@ async function trackEnv(ctx: ToolContext, st: CoasterState, extra: TileXY[] = []
     const reg = await ctx.cache.region(rect);
     return { get: reg.get, rideId: st.rideId, sandbox: ctx.state.mode === "sandbox", mapSize: await ctx.cache.mapSize() };
 }
+
+// ---------------------------------------------------------------------------
+// Décomposition des notes (COASTER_REFERENCE P1)
+// ---------------------------------------------------------------------------
+
+const r2 = (v: number) => Math.round(v) / 100;
+
+export interface RatingReport {
+    /** Notes recalculées et notes du jeu (sur 10). */
+    computed: { excitement: number; intensity: number; nausea: number };
+    game: { excitement: number; intensity: number; nausea: number };
+    /** Écart d'excitation recalculé − jeu. */
+    excitementError: number;
+    terms: { term: string; E: number; I: number; N: number; input?: string; cap?: string }[];
+    levers: { lever: string; E: number; I: number; N: number }[];
+    notes: string[];
+    /** Entrées complètes et termes bruts en centièmes (réutilisés par coaster_compare). */
+    inputs: RatingInputs;
+    raw: StoredTerm[];
+}
+
+/**
+ * Recalcule les notes d'un circuit testé et leurs composantes. Les mesures du jeu (vitesses, G, durée, chutes) viennent
+ * de ride.get ; virages, inversions et hélices des pièces ; proximité, abri et scénerie de track.rating_scan.
+ */
+async function ratingBreakdown(ctx: ToolContext, st: CoasterState, detail: RideDetail): Promise<RatingReport> {
+    const data = ratingsDataFor(st.rideType);
+    if (!data) toolError("NOT_SUPPORTED_IN_MODE", `Pas de formule de note « normale » pour ${st.ride.name}.`);
+    if (detail.excitement === null || detail.intensity === null || detail.nausea === null) {
+        toolError("INVALID_PARAMS", `${st.name} n'a pas encore de notes.`, { hint: `coaster_test { ride: ${st.rideId} } d'abord.` });
+    }
+    const table = st.table;
+    const pieces = st.pieces;
+    const zOff = data.heights?.vehicleZOffset ?? 8;
+    const scan = await ctx.bridge.call("track.rating_scan", {
+        ride: st.rideId,
+        pieces: pieces.map((p) => ({ x: p.x, y: p.y, z: p.z + (table.require(p.type).elements[0]?.z ?? 0), type: p.type })),
+        shelter: shelterPoints(table, pieces, zOff),
+    });
+    const s = detail.stats;
+    const units = segmentUnits(table, pieces);
+    const features = countTrackFeatures(table, pieces);
+    const inputs: RatingInputs = {
+        lengthM: Math.floor(s.rideLength),
+        totalTime: s.rideTime,
+        maxSpeed16: 0,
+        avgSpeed16: 0,
+        carsPerTrain: scan.carsPerTrain,
+        maxPosG: Math.round(s.maxPositiveVerticalGs * 100),
+        maxNegG: Math.round(s.maxNegativeVerticalGs * 100),
+        maxLatG: Math.round(s.maxLateralGs * 100),
+        features,
+        drops: s.numDrops,
+        highestDrop: s.highestDropHeight,
+        shelter: shelterFromBlocks(table, pieces, scan.sheltered, units ? s.rideLength / units : 0, s.rideLength),
+        proximity: scan.proximity,
+        scenery: scan.scenery,
+        reversedTrains: (scan.rideFlags & RIDE_FLAG_REVERSED) !== 0,
+        synchronised: false,
+        airTime: Math.round((s.totalAirTime * 100) / 3),
+        entry: {
+            excitement: scan.entry.excitement,
+            intensity: scan.entry.intensity,
+            nausea: scan.entry.nausea,
+            limitAirTimeBonus: (scan.entry.flags & ENTRY_FLAG.limitAirTimeBonus) !== 0,
+            coveredRide: (scan.entry.flags & ENTRY_FLAG.isACoveredRide) !== 0,
+        },
+        numStations: detail.stations.length,
+    };
+    const game = { excitement: Math.round(detail.excitement! * 100), intensity: Math.round(detail.intensity! * 100), nausea: Math.round(detail.nausea! * 100) };
+    const best = resolveSpeeds(data!, inputs, s.maxSpeed, s.averageSpeed, game);
+    const notes: string[] = [];
+    if (scan.missing.length) notes.push(`${scan.missing.length} pièce(s) introuvable(s) sur la carte (proximité incomplète) : le circuit a changé depuis la lecture ?`);
+    if (scan.noEntrance) notes.push("Station sans entrée : le jeu ne compte aucune proximité.");
+    notes.push("Abri estimé bloc par bloc (le jeu le mesure à chaque tick) ; vitesses brutes déduites des mph entiers de l'API.");
+    const res = best.result;
+    return {
+        computed: { excitement: r2(res.excitement), intensity: r2(res.intensity), nausea: r2(res.nausea) },
+        game: { excitement: detail.excitement!, intensity: detail.intensity!, nausea: detail.nausea! },
+        excitementError: r2(res.excitement - game.excitement),
+        terms: res.terms.map((t) => ({ term: t.key, E: r2(t.excitement), I: r2(t.intensity), N: r2(t.nausea), input: t.input, cap: t.cap })),
+        levers: ratingLevers(data!, best.inputs)
+            .filter((l) => l.excitement || l.intensity)
+            .slice(0, 8)
+            .map((l) => ({ lever: l.lever, E: r2(l.excitement), I: r2(l.intensity), N: r2(l.nausea) })),
+        notes,
+        inputs: best.inputs,
+        raw: res.terms,
+    };
+}
+
+/** Ride.flags (absent du type RideDetail). */
+const flagsOf = (d: RideDetail): number => ((d as unknown as { flags?: number }).flags ?? 0) as number;
+
+/**
+ * Essai : ferme deux fois (efface trains et accident), passe en test, fait tourner le jeu à vitesse 4 en relevant la
+ * vitesse et les G de chaque pièce, jusqu'à la fin des essais et au moins 90 % des pièces relevées (ou maxTicks).
+ */
+async function runCoasterTest(ctx: ToolContext, st: CoasterState, maxTicks: number): Promise<{ detail: RideDetail; ticks: number; samples: Map<string, PieceSample> }> {
+    const ride = st.rideId;
+    await clearTrains(ctx, ride);
+    const before = await ctx.bridge.call("ride.get", { id: ride });
+    if (before.status !== "testing") {
+        const s = await ctx.bridge.call("ride.set_status", { ride, status: "testing" });
+        if (!s.ok) toolError("GAME_ACTION_FAILED", `Test refusé : ${s.error?.message}`, { hint: "Entrée/sortie manquantes ? Circuit incomplet ? Lis le message du jeu." });
+    }
+    const step = 800;
+    let ticks = 0;
+    let detail = before;
+    const samples = new Map<string, PieceSample>();
+    while (ticks < maxTicks) {
+        const run = await ctx.bridge.call("time.run", { ticks: step, speed: 4, sample: { ride } }, { timeoutMs: (step / 40 / 4) * 2000 + 30_000 });
+        for (const sm of run.samples ?? []) mergeSample(samples, sm);
+        ticks += step;
+        detail = await ctx.bridge.call("ride.get", { id: ride });
+        const f = flagsOf(detail);
+        if (f & RIDE_FLAGS.crashed) break;
+        // « tested » peut rester d'un essai précédent : on attend aussi que le premier train ait parcouru le
+        // circuit (au moins 90 % des pièces relevées), pour avoir un profil de vitesse complet.
+        const covered = matchSamples(st.pieces, [...samples.values()]).filter((m) => m.sample && m.sample.n > 0).length;
+        if (f & RIDE_FLAGS.tested && covered >= st.pieces.length * 0.9) break;
+    }
+    return { detail, ticks, samples };
+}
+
+let measuresCache: MeasureStore | null = null;
+const measures = (ctx: ToolContext): MeasureStore => (measuresCache ??= MeasureStore.inUserDir(ctx.config.userDir));
+
+/** Garde les mesures d'un essai réussi (coaster_compare les réutilise tant que le circuit ne change pas). */
+function recordMeasure(ctx: ToolContext, st: CoasterState, detail: RideDetail, measured: MeasuredPiece[], rating: RatingReport | undefined): CoasterMeasure {
+    const m: CoasterMeasure = {
+        rideId: st.rideId,
+        name: st.name,
+        rideType: st.rideType,
+        fingerprint: circuitFingerprint(st.pieces),
+        measuredAt: new Date().toISOString(),
+        ratings: { excitement: detail.excitement ?? 0, intensity: detail.intensity ?? 0, nausea: detail.nausea ?? 0 },
+        stats: detail.stats,
+        layout: layoutStats(st.table, st.pieces, false),
+        pieces: st.pieces,
+        speedsKmh: measured.map((x) => (x.sample && x.sample.n > 0 ? kmh(x.sample.vFirst) : -1)),
+        g: measured.map((x) => (x.sample ? { vertMax: x.sample.gVertMax, vertMin: x.sample.gVertMin, latMax: x.sample.gLatMax } : null)),
+        rating: rating ? { terms: rating.raw, inputs: rating.inputs, computed: rating.computed } : undefined,
+    };
+    measures(ctx).set(m);
+    return m;
+}
+
+/**
+ * Mesures d'une attraction pour la comparaison : celles gardées si le circuit n'a pas changé, sinon un nouvel essai
+ * (sans recaler le modèle de vitesse).
+ */
+async function measureFor(ctx: ToolContext, rideId: number, maxTicks: number, retest: boolean): Promise<{ m: CoasterMeasure; fresh: boolean }> {
+    const st = await loadCoaster(ctx, rideId);
+    if (!st.closed) toolError("INVALID_PARAMS", `${st.name} : circuit ouvert (${st.pieces.length} pièces).`);
+    const kept = retest ? undefined : measures(ctx).get(rideId, circuitFingerprint(st.pieces));
+    if (kept?.rating) return { m: kept, fresh: false };
+    const run = await runCoasterTest(ctx, st, maxTicks);
+    ctx.cache.invalidateAll();
+    if (!(flagsOf(run.detail) & RIDE_FLAGS.tested) || flagsOf(run.detail) & RIDE_FLAGS.crashed) {
+        toolError("GAME_ACTION_FAILED", `${st.name} : essai non concluant (accident ou essais incomplets).`, { hint: `coaster_test { ride: ${rideId} } pour le détail.` });
+    }
+    const rating = await ratingBreakdown(ctx, st, run.detail);
+    return { m: recordMeasure(ctx, st, run.detail, matchSamples(st.pieces, [...run.samples.values()]), rating), fresh: true };
+}
+
+/** Version compacte pour les réponses d'outils (sans les entrées brutes). */
+const reportView = (r: RatingReport) => ({ ...r, inputs: undefined, raw: undefined });
 
 // ---------------------------------------------------------------------------
 // Pose et retrait de pièces (batch.execute : trackplace / trackremove en unités monde)
@@ -1118,30 +1302,9 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
         async ({ ride, maxTicks, open }) => {
             const st = await loadCoaster(ctx, ride);
             if (!st.closed) toolError("INVALID_PARAMS", `Circuit ouvert (${st.pieces.length} pièces).`, { hint: "coaster_build_plan { plan: [], close: true } pour refermer." });
-            let before = await ctx.bridge.call("ride.get", { id: ride });
-            await clearTrains(ctx, ride);
-            before = await ctx.bridge.call("ride.get", { id: ride });
-            if (before.status !== "testing") {
-                const s = await ctx.bridge.call("ride.set_status", { ride, status: "testing" });
-                if (!s.ok) toolError("GAME_ACTION_FAILED", `Test refusé : ${s.error?.message}`, { hint: "Entrée/sortie manquantes ? Circuit incomplet ? Lis le message du jeu." });
-            }
-            const step = 800;
-            let ticks = 0;
-            let detail = before;
-            const samples = new Map<string, PieceSample>();
-            const flagsOf = (d: typeof before) => ((d as unknown as { flags?: number }).flags ?? 0) as number;
-            while (ticks < maxTicks) {
-                const run = await ctx.bridge.call("time.run", { ticks: step, speed: 4, sample: { ride } }, { timeoutMs: (step / 40 / 4) * 2000 + 30_000 });
-                for (const sm of run.samples ?? []) mergeSample(samples, sm);
-                ticks += step;
-                detail = await ctx.bridge.call("ride.get", { id: ride });
-                const f = flagsOf(detail);
-                if (f & RIDE_FLAGS.crashed) break;
-                // « tested » peut rester d'un essai précédent : on attend aussi que le premier train ait parcouru le
-                // circuit (au moins 90 % des pièces relevées), pour avoir un profil de vitesse complet.
-                const covered = matchSamples(st.pieces, [...samples.values()]).filter((m) => m.sample && m.sample.n > 0).length;
-                if (f & RIDE_FLAGS.tested && covered >= st.pieces.length * 0.9) break;
-            }
+            const run = await runCoasterTest(ctx, st, maxTicks);
+            const { ticks, samples } = run;
+            const detail = run.detail;
             const f = flagsOf(detail);
             const tested = !!(f & RIDE_FLAGS.tested);
             const problems: string[] = [];
@@ -1187,7 +1350,17 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const fitted = tested ? fitModel(st.table, measured, prior) : prior;
             const meanError = modelError(fitted, st.table, measured);
             if (fitted !== prior) models.set(st.rideType, fitted);
+            let rating: RatingReport | { error: string } | undefined;
+            if (tested && !(f & RIDE_FLAGS.crashed)) {
+                try {
+                    rating = await ratingBreakdown(ctx, st, detail);
+                } catch (e) {
+                    rating = { error: `Décomposition indisponible : ${e instanceof Error ? e.message : String(e)} (plugin à jour ? redémarre le jeu après install:plugin).` };
+                }
+                recordMeasure(ctx, st, detail, measured, rating && "computed" in rating ? rating : undefined);
+            }
             return result({
+                budget: BUDGET.readLarge,
                 response: {
                     summary: `${st.name} : ${tested ? "essais terminés" : "essais incomplets"}${f & RIDE_FLAGS.crashed ? ", ACCIDENT" : ""} ; excitation ${detail.excitement ?? "?"}, intensité ${detail.intensity ?? "?"}, nausée ${detail.nausea ?? "?"}.`,
                     profile: describeSequence(st.table, st.pieces, baseZ, speedsKmh),
@@ -1202,6 +1375,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     crashed: !!(f & RIDE_FLAGS.crashed),
                     stalled: !!(f & RIDE_FLAGS.hasStalledVehicle),
                     ratings: { excitement: detail.excitement, intensity: detail.intensity, nausea: detail.nausea },
+                    rating: rating && "computed" in rating ? reportView(rating) : rating,
                     stats: {
                         maxSpeedKmh: Math.round(s.maxSpeed * 1.609),
                         rideTimeS: s.rideTime,
@@ -1272,9 +1446,18 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const first = st.pieces.find((p) => STATION_TYPES.has(p.type)) ?? st.pieces[0];
             const baseZ = first ? first.z + table.require(first.type).beginZ : 0;
             const stats = layoutStats(table, st.pieces, false);
+            let rating: RatingReport | { error: string } | undefined;
+            if (st.closed && detail.excitement !== null && ratingsDataFor(st.rideType)) {
+                try {
+                    rating = await ratingBreakdown(ctx, st, detail);
+                } catch (e) {
+                    rating = { error: e instanceof Error ? e.message : String(e) };
+                }
+            }
             return result({
                 budget: BUDGET.readLarge,
                 response: {
+                    rating: rating && "computed" in rating ? reportView(rating) : rating,
                     summary: `${st.name} (${st.ride.name}) : ${stats.pieces} pièces, ${stats.lengthTiles} tuiles de piste sur ${stats.footprint.size}, ${stats.inversions} inversion(s)${st.closed ? "" : ", circuit ouvert"}.`,
                     rideType: st.ride.name,
                     object: detail.object,
@@ -1283,6 +1466,119 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
                     sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed).map((x) => kmh(x.vIn))),
                     inversionsAvailable: availableInversions(table, st.ride),
+                },
+            });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
+        "coaster_rating_breakdown",
+        {
+            title: "Décomposer les notes d'une montagne russe",
+            description:
+                "Recalcule l'excitation, l'intensité et la nausée d'un circuit déjà testé, terme par terme comme le jeu (RideRatings.cpp) : " +
+                "longueur, durée (plafond 150 s), vitesse max et moyenne, G, virages (plats, inclinés, en pente, par longueur), inversions (plafond 6), " +
+                "hélices (9), chutes (9), abri, proximité (pièces au ras du sol jusqu'à 70, piste au-dessus d'elle-même, chemins, eau), scénerie, " +
+                "exigences et pénalités. Chaque terme donne sa valeur d'entrée et son plafond ; levers chiffre l'effet d'une variation " +
+                "(+1 inversion, +1 mph de moyenne, +10 pièces au sol…) pour savoir quoi changer. Sans nouvel essai : lance coaster_test avant si la piste a changé.",
+            input: { ride: z.number().int().min(0) },
+            readOnly: true,
+        },
+        async ({ ride }) => {
+            const st = await loadCoaster(ctx, ride);
+            if (!st.closed) toolError("INVALID_PARAMS", `Circuit ouvert (${st.pieces.length} pièces).`);
+            const detail = await ctx.bridge.call("ride.get", { id: ride });
+            const rep = await ratingBreakdown(ctx, st, detail);
+            return result({
+                budget: BUDGET.readLarge,
+                response: {
+                    summary: `${st.name} : excitation recalculée ${rep.computed.excitement} (jeu ${rep.game.excitement}), intensité ${rep.computed.intensity} (jeu ${rep.game.intensity}), nausée ${rep.computed.nausea} (jeu ${rep.game.nausea}).`,
+                    ...reportView(rep),
+                },
+            });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
+        "coaster_compare",
+        {
+            title: "Comparer un circuit à sa référence",
+            description:
+                "Met côte à côte un circuit (ride) et sa référence (reference), tous deux dans le parc : notes, écart d'excitation par composante " +
+                "(vitesse moyenne, inversions, virages, chutes, proximité…, au grain le plus fin), emprise, densité, longueur, durée, vitesses, " +
+                "profil de vitesse le long du parcours (km/h tous les 10 % de la longueur), G par cinquième du parcours, suite des éléments. " +
+                "Conclut par les trois leviers qui rapportent le plus. Teste chaque circuit qui n'a pas de mesure pour sa forme actuelle " +
+                "(mesures gardées entre les appels ; retest: true pour forcer).",
+            input: {
+                ride: z.number().int().min(0),
+                reference: z.number().int().min(0),
+                retest: z.boolean().default(false),
+                maxTicks: z.number().int().min(400).max(24000).default(8000),
+            },
+        },
+        async ({ ride, reference, retest, maxTicks }) => {
+            // La référence d'abord : c'est elle qui fixe la cible.
+            const ref = await measureFor(ctx, reference, maxTicks, retest);
+            const cur = await measureFor(ctx, ride, maxTicks, retest);
+            const table = await segmentTable(ctx);
+            const a = cur.m;
+            const b = ref.m;
+            const gaps = ratingGaps(a.rating!.terms, b.rating!.terms);
+            const levers = topLevers(gaps, 3);
+            const side = (m: CoasterMeasure) => ({
+                name: m.name,
+                footprint: m.layout.footprint.size,
+                footprintTiles: (m.layout.footprint.x2 - m.layout.footprint.x1 + 1) * (m.layout.footprint.y2 - m.layout.footprint.y1 + 1),
+                density: m.layout.density,
+                pieces: m.layout.pieces,
+                lengthM: Math.round(m.stats.rideLength),
+                rideTimeS: m.stats.rideTime,
+                avgSpeedKmh: Math.round(m.stats.averageSpeed * 1.609),
+                maxSpeedKmh: Math.round(m.stats.maxSpeed * 1.609),
+                inversions: m.rating!.inputs.features.inversions,
+                helixPieces: m.rating!.inputs.features.helices,
+                drops: m.stats.numDrops,
+                maxPosG: m.stats.maxPositiveVerticalGs,
+                maxNegG: m.stats.maxNegativeVerticalGs,
+                maxLatG: m.stats.maxLateralGs,
+                levels: `${m.layout.minLevel}→${m.layout.maxLevel}`,
+                measuredAt: m.measuredAt,
+            });
+            const dE = Math.round((b.ratings.excitement - a.ratings.excitement) * 100) / 100;
+            return result({
+                budget: BUDGET.readLarge,
+                response: {
+                    summary:
+                        `${a.name} : ${a.ratings.excitement} / ${a.ratings.intensity} / ${a.ratings.nausea} ; ${b.name} (référence) : ${b.ratings.excitement} / ${b.ratings.intensity} / ${b.ratings.nausea}` +
+                        ` ; écart d'excitation ${dE >= 0 ? "−" : "+"}${Math.abs(dE).toFixed(2)}.`,
+                    levers,
+                    ratings: {
+                        ride: a.ratings,
+                        reference: b.ratings,
+                        gap: {
+                            excitement: dE,
+                            intensity: Math.round((b.ratings.intensity - a.ratings.intensity) * 100) / 100,
+                            nausea: Math.round((b.ratings.nausea - a.ratings.nausea) * 100) / 100,
+                        },
+                    },
+                    components: gaps.map((g) => ({
+                        component: g.key,
+                        gap: g.gap / 100,
+                        ride: g.ride / 100,
+                        reference: g.reference / 100,
+                        rideInput: g.rideInput,
+                        referenceInput: g.referenceInput,
+                    })),
+                    layout: { ride: side(a), reference: side(b) },
+                    speedProfileKmh: { ride: speedProfile(table, a.pieces, a.speedsKmh), reference: speedProfile(table, b.pieces, b.speedsKmh) },
+                    gBySection: { ride: gSections(table, a.pieces, a.g), reference: gSections(table, b.pieces, b.g) },
+                    elements: { ride: elementSequence(a.pieces), reference: elementSequence(b.pieces) },
+                    measured: { ride: cur.fresh ? "essai effectué" : `mesure gardée (${a.measuredAt})`, reference: ref.fresh ? "essai effectué" : `mesure gardée (${b.measuredAt})` },
+                    next_hints: ["coaster_rating_breakdown { ride } donne aussi l'effet marginal de chaque levier (levers) sur ce circuit."],
                 },
             });
         },

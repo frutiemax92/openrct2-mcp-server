@@ -166,6 +166,131 @@ for (const line of cheatEnum.split("\n")) {
 }
 
 // ---------------------------------------------------------------------------
+// 4. Notes des attractions (COASTER_REFERENCE P1) : RatingsData, hauteurs et drapeaux de chaque RideTypeDescriptor
+// ---------------------------------------------------------------------------
+
+/** Évalue une constante C++ simple : entiers, hexadécimaux, RideRating::make(a, b), MakeFixed16_2dp(a, b). */
+function evalConst(expr) {
+    const s = expr
+        .trim()
+        .replace(/RideRating::make\(\s*(-?\d+)\s*,\s*(\d+)\s*\)/g, (_, a, b) => String(Number(a) * 100 + Number(b)))
+        .replace(/MakeFixed16_2dp\(\s*(-?\d+)\s*,\s*(\d+)\s*\)/g, (_, a, b) => String(Number(a) * 100 + Number(b)))
+        .replace(/kDynamicRideShelterRating/g, "-1")
+        .replace(/\btrue\b/g, "1")
+        .replace(/\bfalse\b/g, "0");
+    if (!/^[-+*/()\sx0-9a-fA-F]+$/.test(s)) throw new Error(`Constante non évaluable : ${expr}`);
+    return Number(Function(`"use strict"; return (${s});`)());
+}
+
+/** Découpe le contenu d'accolades au niveau supérieur (virgules hors accolades et parenthèses). */
+function splitTop(body) {
+    const out = [];
+    let depth = 0;
+    let cur = "";
+    for (const ch of body) {
+        if (ch === "{" || ch === "(") depth++;
+        if (ch === "}" || ch === ")") depth--;
+        if (ch === "," && depth === 0) {
+            if (cur.trim()) out.push(cur.trim());
+            cur = "";
+        } else cur += ch;
+    }
+    if (cur.trim()) out.push(cur.trim());
+    return out;
+}
+
+/** Contenu entre l'accolade ouvrante à `start` et sa fermante. */
+function braced(text, start) {
+    let depth = 0;
+    for (let i = start; i < text.length; i++) {
+        if (text[i] === "{") depth++;
+        else if (text[i] === "}" && --depth === 0) return text.slice(start + 1, i);
+    }
+    throw new Error("Accolade non fermée");
+}
+
+function enumRanks(text, name) {
+    const body = new RegExp(`enum class ${name}\\b[^{]*\\{([\\s\\S]*?)\\};`).exec(text)?.[1];
+    if (!body) throw new Error(`enum ${name} introuvable`);
+    const ranks = {};
+    let i = 0;
+    for (const line of body.replace(/\/\*[\s\S]*?\*\//g, "").split("\n")) {
+        const m = /^\s*(\w+)\s*(?:=\s*(\d+))?\s*,?\s*(?:\/\/.*)?$/.exec(line);
+        if (!m) continue;
+        if (m[2] !== undefined) i = Number(m[2]);
+        ranks[m[1]] = i++;
+    }
+    return ranks;
+}
+
+const rideDataH = readFileSync(join(src, "ride", "RideData.h"), "utf8");
+// Ensembles nommés de drapeaux RTD (kRtdFlagsCommonCoaster…), pour savoir quels types ont hasAirTime.
+const rtdFlagSets = new Map();
+for (const m of rideDataH.matchAll(/constexpr\s+RtdFlags\s+(\w+)\s*=\s*\{([\s\S]*?)\};/g)) {
+    rtdFlagSets.set(m[1], new Set([...m[2].matchAll(/RtdFlag::(\w+)/g)].map((x) => x[1])));
+}
+const modifierTypes = enumRanks(rideDataH, "RatingsModifierType");
+const calcTypes = enumRanks(rideDataH, "RatingsCalculationType");
+
+const ratingsByRtd = new Map();
+for (const f of rtdFiles) {
+    const text = readFileSync(f, "utf8");
+    for (const m of text.matchAll(/constexpr\s+RideTypeDescriptor\s+(\w+)\s*=\s*\{([\s\S]*?)\n\};/g)) {
+        const body = m[2].replace(/\/\/[^\n]*/g, "");
+        const at = body.indexOf(".RatingsData =");
+        if (at < 0) continue;
+        const parts = splitTop(braced(body, body.indexOf("{", at)));
+        const [type, base, unreliability, shelter, relax, mods] = parts;
+        const baseVals = splitTop(base.slice(1, -1)).map(evalConst);
+        const modifiers = splitTop(mods.slice(1, -1)).map((mm) => {
+            const [kind, threshold, e, i, n] = splitTop(mm.slice(1, -1));
+            const k = /RatingsModifierType::(\w+)/.exec(kind)[1];
+            if (modifierTypes[k] === undefined) throw new Error(`Modificateur inconnu : ${k}`);
+            return { type: k, threshold: evalConst(threshold), excitement: evalConst(e), intensity: evalConst(i), nausea: evalConst(n) };
+        });
+        const flagsExpr = /\.flags\s*=\s*([\s\S]*?),\n\s*\./.exec(body)?.[1] ?? "";
+        const flags = new Set([...flagsExpr.matchAll(/RtdFlag::(\w+)/g)].map((x) => x[1]));
+        for (const name of flagsExpr.match(/kRtdFlags\w+/g) ?? []) for (const fl of rtdFlagSets.get(name) ?? []) flags.add(fl);
+        const heights = /\.Heights\s*=\s*\{([^}]*)\}/.exec(body)?.[1];
+        // Boutiques : hauteurs nommées (kDefault…Height), inutiles ici.
+        const heightVals = heights && splitTop(heights).every((h) => /^-?(0x)?[0-9a-fA-F]+$/.test(h)) ? splitTop(heights).map(evalConst) : null;
+        const [maxHeight, clearanceHeight, vehicleZOffset, platformHeight] = heightVals ?? [];
+        const calc = /RatingsCalculationType::(\w+)/.exec(type)[1];
+        if (calcTypes[calc] === undefined) throw new Error(`Type de calcul inconnu : ${calc}`);
+        ratingsByRtd.set(m[1], {
+            calculation: calc,
+            base: { excitement: baseVals[0], intensity: baseVals[1], nausea: baseVals[2] },
+            unreliability: evalConst(unreliability),
+            rideShelter: evalConst(shelter),
+            relaxRequirementsIfInversions: evalConst(relax) === 1,
+            modifiers,
+            hasAirTime: flags.has("hasAirTime"),
+            hasGForces: flags.has("hasGForces"),
+            heights: heightVals ? { maxHeight, clearanceHeight, vehicleZOffset, platformHeight } : null,
+        });
+    }
+}
+
+const rideRatings = {};
+{
+    let idx = 0;
+    for (const m of table.matchAll(/\/\*\s*RIDE_TYPE_(\w+)\s*\*\/\s*(\w+),/g)) {
+        const r = ratingsByRtd.get(m[2]);
+        if (r) rideRatings[idx] = { name: m[1].toLowerCase(), ...r };
+        idx++;
+    }
+}
+
+const rideH = readFileSync(join(src, "ride", "Ride.h"), "utf8");
+const rideEntryH = readFileSync(join(src, "ride", "RideEntry.h"), "utf8");
+const ratingFlags = {
+    /** Rang des drapeaux de Ride.flags (FlagHolder : 1 << rang). */
+    rideFlag: enumRanks(rideH, "RideFlag"),
+    /** Rang des drapeaux de RideObject.flags. */
+    rideEntryFlag: enumRanks(rideEntryH, "RideEntryFlag"),
+};
+
+// ---------------------------------------------------------------------------
 // Écriture
 // ---------------------------------------------------------------------------
 
@@ -206,6 +331,24 @@ writeFileSync(
     banner + "/** Valeurs de `TrackElemType` (ride/ted/TrackElemType.h), hors alias legacy. */\n" +
         "export const TRACK_ELEM_TYPES = " + JSON.stringify(trackElemTypes, null, 4) + " as const;\n\n" +
         "export type TrackElemName = keyof typeof TRACK_ELEM_TYPES;\n",
+);
+
+writeFileSync(
+    join(genDir, "rideRatings.ts"),
+    banner +
+        "/** Modificateur de note (RatingsModifier, ride/RideData.h) : seuil et coefficients bruts du C++. */\n" +
+        "export interface RatingsModifierData {\n    type: string;\n    threshold: number;\n    excitement: number;\n    intensity: number;\n    nausea: number;\n}\n\n" +
+        "/** RideTypeDescriptor.RatingsData et ce qui sert au calcul des notes (RideRatings.cpp). Notes en centièmes. */\n" +
+        "export interface RideRatingsData {\n    name: string;\n    calculation: string;\n    base: { excitement: number; intensity: number; nausea: number };\n" +
+        "    unreliability: number;\n    /** -1 : abri calculé (kDynamicRideShelterRating). */\n    rideShelter: number;\n    relaxRequirementsIfInversions: boolean;\n" +
+        "    modifiers: RatingsModifierData[];\n    hasAirTime: boolean;\n    hasGForces: boolean;\n" +
+        "    /** RideHeights, en unités monde (8 par demi-niveau). */\n    heights: { maxHeight: number; clearanceHeight: number; vehicleZOffset: number; platformHeight: number } | null;\n}\n\n" +
+        "/** Par type d'attraction (rideType). */\n" +
+        "export const RIDE_RATINGS: Readonly<Record<number, RideRatingsData>> = " +
+        JSON.stringify(rideRatings, null, 4) +
+        ";\n\n/** Rangs des énumérations de drapeaux utiles au calcul (FlagHolder : bit = 1 << rang). */\nexport const RATING_FLAGS = " +
+        JSON.stringify(ratingFlags, null, 4) +
+        " as const;\n",
 );
 
 mkdirSync(join(root, "data"), { recursive: true });

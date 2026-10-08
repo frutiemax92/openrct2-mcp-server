@@ -37,7 +37,18 @@ Les trois premiers défauts sont corrigés (`coaster_describe`, macro `inversion
 
 ## 3. Informations et outils à ajouter, par priorité
 
-### P1. Décomposition de la note (`coaster_rating_breakdown`)
+### P1. Décomposition de la note (`coaster_rating_breakdown`) — fait
+
+> **Fait (7 octobre 2026).** Mesuré en jeu, recalcul exact sur les trois notes : Frightmare 7,40 / 7,82 / 4,63 (jeu 7,40 / 7,82 / 4,63), Nightmare Frenzy 6,83 / 7,34 / 3,75 (jeu identique). Mise en œuvre :
+>
+> - `tools/gen-tables.mjs` génère `protocol/src/generated/rideRatings.ts` : `RatingsData` de chaque type (base, modificateurs, seuils), hauteurs (`clearanceHeight`, `vehicleZOffset`), drapeau `hasAirTime`, rangs de `RideFlag` et `RideEntryFlag`.
+> - `planners/ratings.ts` reproduit `RideRatings.cpp` à l'entier près (saturation de `RideRatingsAdd`, exigences ÷ 2 levées par les inversions, pénalité d'intensité, multiplicateurs de l'objet, temps en l'air). Virages, inversions (`normalToInversion`), hélices et chutes sont recomptés sur les pièces comme `Vehicle::UpdateMeasurements`. Cela inclut une bizarrerie : la pièce qui termine un virage n'en commence pas un autre, donc un virage gauche suivi d'un virage droit ne compte qu'un virage.
+> - Méthode `track.rating_scan` du plugin : compteurs de proximité calculés sur les éléments réels de la carte (comme `ride_ratings_score_close_proximity`), abri de chaque bloc (`TrackGetIsSheltered`, ou sous terre), scénerie autour de la station, voitures par train, multiplicateurs de l'objet.
+> - L'API donne les vitesses en mph entiers. Le jeu compte en crans de `velocity >> 16` (2,25 mph). Le serveur essaie les crans compatibles et garde celui qui retombe sur les trois notes.
+> - `coaster_test` et `coaster_describe { ride }` renvoient `rating` ; `coaster_rating_breakdown { ride }` le donne sans nouvel essai. Chaque terme indique sa valeur d'entrée, son plafond et ses sous-parts. `levers` chiffre l'effet marginal de variations types.
+> - Limite : l'abri est estimé bloc par bloc, alors que le jeu le mesure à chaque tick. Il ne pèse rien sur ces deux circuits.
+>
+> Correction des chiffres ci-dessous, lus avant le calcul exact : la vitesse moyenne pèse environ 4,4 centièmes **par cran de 2,25 mph** (environ 5 avec le multiplicateur du véhicule), et non par mph. Une inversion vaut +0,12 ; l'écart de vitesse moyenne avec Frightmare (18 → 25 mph) ne vaut que +0,13.
 
 **Pourquoi.** L'écart de 0,57 avec Frightmare ne se lit pas dans les notes. En lisant `RideRatings.cpp`, on trouve que la vitesse moyenne pèse environ 4,4 centièmes par mph (≈ +0,37 d'écart ici), chaque inversion ≈ +0,11 (jusqu'à 6), chaque pièce qui touche le sol jusqu'à 70 pièces, et la longueur seule ≈ +0,05. Sans ces chiffres, Claude allonge la piste au lieu d'accélérer le train.
 
@@ -59,7 +70,11 @@ Les trois premiers défauts sont corrigés (`coaster_describe`, macro `inversion
   3. reproduire la formule avec les coefficients du `RatingsData` du type (à générer dans `tools/gen-tables.mjs`, comme les autres tables) et vérifier qu'on retombe sur la note du jeu à ±0,1.
 - Ajouter le tableau à `coaster_test` (sur le circuit testé) et à `coaster_describe` (estimation, pour la référence).
 
-### P2. Comparaison à la référence (`coaster_compare { ride, reference }`)
+### P2. Comparaison à la référence (`coaster_compare { ride, reference }`) — fait
+
+> **Fait (7 octobre 2026).** `coaster_compare` teste d'abord la référence, puis le circuit, s'ils n'ont pas de mesure pour leur forme actuelle. Les mesures sont gardées par attraction avec l'empreinte du circuit (nombre de pièces + hachage), dans `<dossier utilisateur>/claude-coaster-measures.json` ; `retest: true` force un essai. Réponse : notes et écarts, écart d'excitation par composante au grain le plus fin (sous-parts des virages, G, chutes, proximité, abri), emprise, densité, longueur, durée, vitesses, profil de vitesse tous les 10 % de la longueur, G par cinquième du parcours, suite des éléments, et les trois leviers qui rapportent le plus.
+>
+> Mesuré, Nightmare Frenzy contre Frightmare (écart −0,57) : « +0,15 : piste qui touche sa propre piste au-dessus/au-dessous 0 → 13 ; +0,13 : vitesse moyenne 18 mph → 25 mph ; +0,13 : hélices 0 → 9 pièces ». Suivent l'inversion manquante (+0,11), la longueur (+0,05) et la durée (+0,04). Les G négatifs de Nightmare Frenzy lui rapportent 0,16 de plus que Frightmare, et le passage au-dessus de sa station 0,07 de plus. Le diagnostic chiffre le constat de P3 : l'écart vient surtout d'une piste qui ne s'empile pas sur elle-même et ne fait pas d'hélice, plus que de la longueur.
 
 **Pourquoi.** Chaque essai a été comparé à Frightmare de mémoire, et une fois aux valeurs du `.td6` au lieu des mesures. L'utilisateur a dû rappeler de tester la référence d'abord.
 
@@ -127,7 +142,7 @@ Les trois premiers défauts sont corrigés (`coaster_describe`, macro `inversion
 
 | Étape | Contenu | Effet attendu |
 |---|---|---|
-| 1 | P1 décomposition + P2 comparaison | Claude sait quel levier tirer et de combien |
+| 1 | P1 décomposition + P2 comparaison — **fait** | Claude sait quel levier tirer et de combien (recalcul exact sur Frightmare et Nightmare Frenzy) |
 | 2 | P4 recherche de section | Plus de scripts hors serveur ; fermetures exactes sous contraintes |
 | 3 | P3 vue spatiale et éléments | Remplir l'intérieur, empiler comme la référence |
 | 4 | P5 G prédits + mesures fines | Plus de surprise d'intensité après l'essai |

@@ -702,6 +702,65 @@ export interface TrackCircuitResult {
     truncated: boolean;
 }
 
+/** Compteurs de proximité de RideRatings.cpp (ordre de l'énumération PROXIMITY_*). */
+export const PROXIMITY_KEYS = [
+    "waterOver",
+    "waterTouch",
+    "waterLow",
+    "waterHigh",
+    "surfaceTouch",
+    "queuePathOver",
+    "queuePathTouchAbove",
+    "queuePathTouchUnder",
+    "pathTouchAbove",
+    "pathTouchUnder",
+    "ownTrackTouchAbove",
+    "ownTrackCloseAbove",
+    "foreignTrackAboveOrBelow",
+    "foreignTrackTouchAbove",
+    "foreignTrackCloseAbove",
+    "scenerySideBelow",
+    "scenerySideAbove",
+    "ownStationTouchAbove",
+    "ownStationCloseAbove",
+    "trackThroughVerticalLoop",
+    "pathThroughVerticalLoop",
+    "intersectingVerticalLoop",
+    "throughVerticalLoop",
+    "pathSideClose",
+    "foreignTrackSideClose",
+    "surfaceSideClose",
+] as const;
+export type ProximityKey = (typeof PROXIMITY_KEYS)[number];
+
+export interface RatingScanParams {
+    ride: number;
+    /** Pièces dans le sens de marche : tuile, z monde du bloc de séquence 0, type. */
+    pieces: { x: number; y: number; z: number; type: number }[];
+    /** Points où tester l'abri (TrackGetIsSheltered), z monde du train. */
+    shelter?: { x: number; y: number; z: number }[];
+}
+
+export interface RatingScanResult {
+    /** Compteurs de proximité, comme ride_ratings_score_close_proximity (une fois par pièce). */
+    proximity: Record<ProximityKey, number>;
+    /** Pièces dont l'élément de séquence 0 n'a pas été trouvé (indices). */
+    missing: number[];
+    /** Résultat de TrackGetIsSheltered pour chaque point de `shelter` (ou sous terre). */
+    sheltered: boolean[];
+    /** ride_ratings_get_scenery_score : éléments de scénerie dans un carré 11×11 autour de la station. */
+    scenery: { items: number; underground: boolean };
+    carsPerTrain: number;
+    trains: number;
+    /** Ride.flags et departFlags bruts. */
+    rideFlags: number;
+    departFlags: number;
+    /** Objet de véhicule : multiplicateurs (RideObject) et drapeaux (RideEntryFlag). */
+    entry: { excitement: number; intensity: number; nausea: number; flags: number };
+    /** La station n'a pas d'entrée : le jeu ne compte alors aucune proximité. */
+    noEntrance: boolean;
+}
+
 // ---------------------------------------------------------------------------
 // Personnel
 // ---------------------------------------------------------------------------
@@ -777,6 +836,7 @@ export interface MethodMap {
     "track.segment": [{ type: number }, TrackSegmentInfo | null];
     "track.segments": [TrackSegmentsParams, TrackSegmentsResult];
     "track.circuit": [TrackCircuitParams, TrackCircuitResult];
+    "track.rating_scan": [RatingScanParams, RatingScanResult];
     "scenery.place_small": [SceneryPlaceParams, BulkResult];
     "scenery.place_large": [LargeSceneryPlaceParams, BulkResult];
     "scenery.place_wall": [WallPlaceParams, BulkResult];
