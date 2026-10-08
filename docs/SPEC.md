@@ -864,7 +864,7 @@ Chaque macro est compilé en pièces par le planificateur ; échec = erreur stru
 - Esthétique du tracé.
 - Types exotiques (multi-lancements, pièces volantes, quarts de boucle à 90° comme ceux de Frightmare : seulement par `piece`).
 - La fermeture A* pénalise les S-bends (coût +3) sans les interdire ; une fermeture courte depuis une pose mal orientée peut encore en contenir.
-- Imiter un circuit de référence : la décomposition de la note et la comparaison sont faites (P1, P2). Ce qui manque encore au serveur (vue spatiale, recherche de section sous contraintes, G prédits, dégagement réel, état fiable) est détaillé dans [COASTER_REFERENCE.md](COASTER_REFERENCE.md). Ce qui manque pour construire aussi compact que la référence (mesures d'espace, rectangle imposé, croisements serrés) est dans [COASTER_SPACE.md](COASTER_SPACE.md).
+- Imiter un circuit de référence : la décomposition de la note et la comparaison sont faites (P1, P2). Les mesures d'espace (éléments, croisements, empilement, plus grand vide, volume libre) sont calculées par `planners/space.ts`, pas encore exposées par les outils (COASTER_SPACE.md, étape 1). Ce qui manque encore au serveur (vue spatiale, recherche de section sous contraintes, G prédits, dégagement réel, état fiable) est détaillé dans [COASTER_REFERENCE.md](COASTER_REFERENCE.md). Ce qui manque pour construire aussi compact que la référence (mesures d'espace, rectangle imposé, croisements serrés) est dans [COASTER_SPACE.md](COASTER_SPACE.md).
 
 Commencer par **un seul type de coaster** (acier classique à chaîne) sur terrain plat.
 

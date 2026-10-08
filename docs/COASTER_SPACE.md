@@ -30,16 +30,18 @@ Frightmare est un bloc. Presque chaque élément touche ou croise une autre part
 
 Toutes se calculent à partir des pièces (`pieceElements`, `TrackBlock` avec `cz`) et, pour le vide et le volume libre, du cache de carte. Unités : tuiles, niveaux (16 unités monde).
 
-**Éléments.** Découper le circuit en éléments : lift (pièces à chaîne), station, freins, puis chaque suite de pièces du même genre (`elementKind`, sans le préfixe `banked`/`halfBanked`). Les transitions (`flatToDown25`, `leftBankToFlat`…) se rattachent à l'élément suivant ; une droite ferme l'élément en cours. `tools/space-analysis.mjs`, qui a produit la section 1, suit exactement cette règle (prototype à porter dans `planners/space.ts`).
+> **Fait (7 octobre 2026), étape 1.** `planners/space.ts` : `spaceElements`, `spaceProfile`, `largestEmptyRect`, `freeVolume`, `isClosed` ; tests dans `test/space.test.ts`. `tools/space-analysis.mjs` appelle désormais `spaceProfile` (sur les mesures gardées, ou sur des `.td6` passés en argument). Mesuré : Frightmare (ride 5, en jeu `112:a707f934`, et `Frightmare.TD6`) et Nightmare Frenzy (ride 9, `87:464ee5d4`) donnent exactement les chiffres de la section 1. Le `.td6` a les mêmes 112 pièces que le circuit du parc ; il commence 3 pièces plus tôt dans la boucle, d'où des indices décalés de 3.
 
-**Pièces voisines dans le parcours.** Deux pièces dont les indices diffèrent d'au plus 2, modulo la longueur du circuit, sont voisines. Elles ne comptent jamais dans les mesures de proximité.
+**Éléments.** Découper le circuit en éléments : lift (pièces à chaîne), station, freins, puis chaque suite de pièces du même genre (`elementKind`, sans le côté ni le préfixe `banked`/`halfBanked`). Une pièce sans genre (droite ou transition : `flatToDown25`, `leftBankToFlat`…) ferme l'élément en cours et n'appartient à aucun élément. C'est la règle du prototype qui a produit la section 1. L'idée de rattacher les transitions à l'élément suivant n'a pas été retenue : elle changerait les chiffres de référence sans rien apporter de mesurable. Dans les croisements, une suite de pièces hors élément compte comme une seule « liaison » (`flat+onRidePhoto+flatToLeftBank`).
+
+**Pièces voisines dans le parcours.** Deux pièces dont les indices diffèrent d'au plus 2, modulo la longueur du circuit, sont voisines. Elles ne comptent jamais dans les mesures de proximité. Sur un tracé en cours de construction (non fermé, détecté sur les poses par `isClosed`), les indices ne bouclent pas : sinon la première et la dernière pièce d'un tracé court passeraient pour voisines.
 
 Par élément :
 
 - `tiles` : tuiles occupées (ensemble des blocs).
 - `nearestGap` : plus petite distance de Tchebychev (0 à 4, au-delà « > 4 ») entre une tuile de l'élément et une tuile portant une pièce non voisine hors de l'élément.
 - `shared` : nombre de tuiles de l'élément qui portent aussi une pièce non voisine, et `minLevelGap` : plus petit écart vertical en niveaux entre les blocs concernés. 0 tuile partagée signifie que l'élément est posé à côté du reste, pas mêlé à lui.
-- `crossings` : liste `{ autreÉlément, tuiles, écart min en niveaux, dessus | dessous }`. C'est la donnée à imiter (« le lift passe au-dessus de l'hélice montante, 2,5 niveaux d'écart »).
+- `crossings` : liste `{ autreÉlément, tuiles, écart min en niveaux, dessus | dessous | mêlé }`, triée par nombre de tuiles. C'est la donnée à imiter. Exemple mesuré sur Frightmare : le lift passe au-dessus de la liaison photo (7 tuiles, 4,5 niveaux), de la spirale descendante (4 tuiles, 5 niveaux), de l'hélice montante finale (4 tuiles, 8 niveaux) et de la grande hélice descendante (2 tuiles, 2,5 niveaux).
 
 Pour le circuit :
 
@@ -47,7 +49,8 @@ Pour le circuit :
 - `stackedTiles` : tuiles portant au moins deux pièces non voisines.
 - `largestVoid` : plus grand rectangle de l'emprise sans aucune piste, à n'importe quelle hauteur (taille, position, part de l'emprise).
 - `isolated` : éléments dont `nearestGap ≥ 2` et `shared = 0`.
-- `freeVolume` (P6) : pour chaque tuile de l'emprise, les intervalles de niveaux libres compte tenu du circuit, du terrain et des chemins (dégagement réel des blocs). Il sert à proposer où empiler.
+- `freeVolume` (P6) : pour chaque tuile d'un rectangle, les intervalles de niveaux libres entre le sol et un plafond, compte tenu du dégagement réel des blocs (`blockSpan`) et, avec le cache de carte, du terrain, de l'eau, des chemins (3 niveaux, comme `blockProblem`) et des pièces d'attraction déjà posées (`ri`). Il sert à proposer où empiler. Pas encore utilisé par un outil (étapes 4 et 5).
+- Écart vertical : plus petit écart entre deux blocs quelconques de la tuile, et non entre le bloc le plus bas de l'élément et les autres comme dans le prototype. Les chiffres de la section 1 n'en changent pas.
 
 Valeurs de référence à figer dans les tests unitaires, calculées sur `Frightmare.TD6` relu par `designLayout` : couverture ≈ 45 %, 80 tuiles empilées, vide 8×8, lift 11 tuiles partagées. Comparer avec une tolérance, car le `.td6` et le circuit posé dans le parc peuvent différer d'une pièce.
 
@@ -96,7 +99,7 @@ En partant d'une zone libre et de la consigne « dans le style de Frightmare »,
 
 | Étape | Contenu | Validation |
 |---|---|---|
-| 1 | `planners/space.ts` + tests (valeurs de la section 1 sur Frightmare.TD6) | tests unitaires, puis en jeu sur les rides 5 et 9 : mêmes chiffres que la section 1 |
+| 1 — **fait** | `planners/space.ts` + tests (valeurs de la section 1 sur Frightmare.TD6) | tests unitaires, puis en jeu sur les rides 5 et 9 : mêmes chiffres que la section 1 (vérifié, voir section 3) |
 | 2 | `space` dans `coaster_describe`, `coaster_compare` (mesures, leviers d'espace, image) | lecture en jeu des deux circuits |
 | 3 | Quarts de tuile dans le dégagement (fin de P6, collisions) | `dryRun` des croisements serrés de Frightmare |
 | 4 | `bounds`, mesures et avertissements `ISOLÉ` dans `coaster_build_plan` et la fermeture | construction en jeu d'une section dans un rectangle imposé |

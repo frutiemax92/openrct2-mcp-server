@@ -105,7 +105,9 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 - Découpage en **éléments** : lift, première chute, chaque inversion, virage, hélice, colline, section de freins, avec le rôle, l'emprise, les niveaux d'entrée et de sortie, la vitesse d'entrée et le minimum mesurés.
 - Liste des **croisements** (tuiles où la piste passe au-dessus d'elle-même, écart en niveaux) et des **zones vides** dans l'emprise.
 
-**Comment.** Tout se calcule à partir des pièces et de `pieceElements`. Le découpage reprend `elementKind` et regroupe les transitions avec l'élément qu'elles servent.
+**Comment.** Tout se calcule à partir des pièces et de `pieceElements`. Le découpage reprend `elementKind`.
+
+> **En cours (7 octobre 2026).** Découpage en éléments, croisements, plus grand vide et volume libre calculés par `planners/space.ts` (COASTER_SPACE.md, étape 1) ; Frightmare et Nightmare Frenzy redonnent les chiffres de COASTER_SPACE.md section 1. Reste à les exposer dans `coaster_describe` et `coaster_compare`, avec l'image du plan (étape 2).
 
 ### P4. Recherche de section sous contraintes (`coaster_search_section`)
 
@@ -156,7 +158,7 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 | Étape | Contenu | Effet attendu |
 |---|---|---|
 | 1 | P1 décomposition + P2 comparaison — **fait** | Claude sait quel levier tirer et de combien (recalcul exact sur Frightmare et Nightmare Frenzy) |
-| 1 bis | Compacité : mesures d'espace, `bounds`, fin de P6 ([COASTER_SPACE.md](COASTER_SPACE.md)) | Claude voit qu'un élément est isolé et construit dans l'emprise de la référence |
+| 1 bis | Compacité : mesures d'espace (calcul fait), `bounds`, fin de P6 ([COASTER_SPACE.md](COASTER_SPACE.md)) | Claude voit qu'un élément est isolé et construit dans l'emprise de la référence |
 | 2 | P4 recherche de section, avec les objectifs d'espace de COASTER_SPACE.md | Plus de scripts hors serveur ; fermetures exactes sous contraintes |
 | 3 | P3 vue spatiale et éléments | Remplir l'intérieur, empiler comme la référence |
 | 4 | P5 G prédits + mesures fines | Plus de surprise d'intensité après l'essai |
