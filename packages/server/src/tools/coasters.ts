@@ -38,6 +38,8 @@ import {
     endPose,
     fits,
     groundTopZ,
+    blockSections,
+    boundsProblem,
     layoutStats,
     originAt,
     pieceAllowed,
@@ -49,15 +51,17 @@ import {
     rideTrackInfo,
     samePose,
     searchCatalog,
+    type BlockSections,
     type Macro,
     type PlannedPiece,
     type RideTrackInfo,
     type TrackBlock,
+    type TrackBounds,
     type TrackEnv,
     type TrackPose,
     rideClearance,
 } from "../planners/track.js";
-import { reliefLevers, reliefProfile, reliefView } from "../planners/space.js";
+import { reliefLevers, reliefProfile, reliefView, spaceLevers, spaceProfile, spaceView, suggestedBounds, type SpaceProfile } from "../planners/space.js";
 import { designDirs, designLayout, loadLibrary, type DesignEntry, type DesignLayout, type DesignPiece, type TrackDesign } from "../planners/td6.js";
 import {
     SpeedModels,
@@ -92,6 +96,7 @@ import {
     shelterPoints,
     type RatingInputs,
 } from "../planners/ratings.js";
+import { checkTarget, referenceTarget, targetLevers, type ReferenceTarget } from "../planners/target.js";
 import { circuitFingerprint, elementSequence, gSections, ratingGaps, speedProfile, topLevers, type CoasterMeasure, type StoredTerm } from "../planners/compare.js";
 import type { InverseOp } from "../state/journal.js";
 import { MeasureStore } from "../state/measures.js";
@@ -169,6 +174,94 @@ async function rideTrain(ctx: ToolContext, rideId: number): Promise<TrainShape |
 }
 
 /** Avertissements : section de freins plus courte que le train (il s'y arrête la queue dans la section précédente). */
+/** Rectangle imposé par circuit (coaster_build_plan bounds), gardé entre les appels jusqu'à bounds: null. */
+const rideBounds = new Map<number, TrackBounds>();
+
+const zBounds = z
+    .object({
+        x1: z.number().int().min(0),
+        y1: z.number().int().min(0),
+        x2: z.number().int().min(0),
+        y2: z.number().int().min(0),
+        minLevel: z.number().int().min(0).max(255).optional(),
+        maxLevel: z.number().int().min(0).max(255).optional(),
+    })
+    .nullable()
+    .optional()
+    .describe(
+        "Rectangle de tuiles (bornes incluses) et niveaux absolus optionnels hors duquel aucune pièce n'est posée, fermeture comprise. " +
+            "Gardé pour les appels suivants sur ce circuit ; null l'efface. Pour imiter une référence : suggestedBounds de coaster_describe.",
+    );
+
+/** Cibles de référence par circuit (coaster_build_plan reference), gardées entre les appels jusqu'à reference: null. */
+const rideTargets = new Map<number, ReferenceTarget>();
+
+const zReference = z
+    .object({ ride: z.number().int().min(0).optional(), design: z.string().min(1).max(256).optional() })
+    .nullable()
+    .optional()
+    .describe(
+        "Circuit de référence (ride du parc ou design .td6) dont le serveur suit la longueur de piste, la densité, l'empilement, le dessous du lift " +
+            "et les trains. Gardé pour les appels suivants ; null l'efface. La fermeture est refusée si le circuit fait moins de 90 % de la longueur " +
+            "de la référence ou permet moins de trains (allowBelowReference: true pour passer outre).",
+    );
+
+/** Cibles d'une référence : circuit du parc (fermé) ou design .td6. */
+async function loadReference(ctx: ToolContext, table: SegmentTable, ref: { ride?: number; design?: string }): Promise<ReferenceTarget> {
+    if ((ref.ride === undefined) === (ref.design === undefined)) toolError("INVALID_PARAMS", "reference : donne soit ride, soit design.");
+    if (ref.design !== undefined) {
+        const entry = findDesign(ctx, ref.design);
+        if (!entry.design) toolError("NOT_SUPPORTED_IN_MODE", `Design ${entry.name} illisible : ${entry.error}.`);
+        return referenceTarget(entry.name, table, designLayout(entry.design, table, { x: 0, y: 0, z: 0 }, 0).pieces);
+    }
+    const detail = await ctx.bridge.call("ride.get", { id: ref.ride! });
+    const circuit = await ctx.bridge.call("track.circuit", { ride: ref.ride! });
+    if (!circuit.closed) toolError("INVALID_PARAMS", `La référence ${detail.name} n'est pas un circuit fermé.`);
+    return referenceTarget(detail.name, table, circuit.pieces);
+}
+
+/**
+ * Avertissements ISOLÉ (COASTER_SPACE 4.2) : éléments du plan posés à 2 tuiles ou plus du reste du circuit sans rien
+ * partager, avec ce que fait la référence pour le même genre d'élément si on la connaît.
+ */
+function isolationWarnings(p: SpaceProfile, firstNew: number): string[] {
+    const fresh = p.isolated.map((i) => p.elements[i]).filter((e) => e.to >= firstNew && e.kind !== "lift");
+    if (!fresh.length) return [];
+    return [
+        `ISOLÉ : ${fresh.map((e) => `${e.kind} (pièces ${e.from}-${e.to}, voisin ${e.nearestGap ?? ">4"})`).join(", ")} posé(s) à côté du reste sans le croiser. ` +
+            "Frightmare passe presque chaque élément au-dessus ou au-dessous d'une autre partie (sous le lift, à travers la boucle) : tourne vers l'intérieur de l'emprise.",
+    ];
+}
+
+/** RideMode : continuousCircuitBlockSectioned, poweredLaunchBlockSectioned (Ride.h). */
+const BLOCK_SECTIONED_MODES = new Set([34, 36]);
+
+/** Avertissements d'un circuit fermé qui ne peut faire tourner qu'un train, ou dont le mode à sections reste à régler. */
+function blockWarnings(b: BlockSections, mode?: number): string[] {
+    if (b.maxTrains <= 1) {
+        return [
+            `UN SEUL TRAIN possible (sections : ${b.boundaries || "aucune"}). Pour en faire tourner plusieurs, pose block_brakes sur du plat ` +
+                "en hauteur, avant les éléments de fin de parcours : chaque frein de bloc et chaque sommet de lift ferme une section ; trains permis = sections − 1.",
+        ];
+    }
+    if (!b.autoBlockMode && (mode === undefined || !BLOCK_SECTIONED_MODES.has(mode))) {
+        return [
+            `Aucun frein de bloc : ${b.maxTrains} trains possibles seulement en mode à sections de bloc, que le jeu ne règle pas seul ` +
+                "(ride_configure settings.mode: 34). Sinon, pose block_brakes.",
+        ];
+    }
+    return [];
+}
+
+/** Écart de sections de bloc avec la référence (trains permis). */
+function blockLevers(ride: BlockSections, ref: BlockSections): string[] {
+    if (ride.maxTrains >= ref.maxTrains) return [];
+    return [
+        `Trains permis ${ride.maxTrains} contre ${ref.maxTrains} dans la référence (sections ${ride.sections} contre ${ref.sections} ; ` +
+            `référence : ${ref.boundaries}). Ajoute ${ref.maxTrains - ride.maxTrains} frein(s) de bloc (block_brakes) aux endroits correspondants.`,
+    ];
+}
+
 function brakeRunWarnings(table: SegmentTable, pieces: TrackPieceInfo[], train: TrainShape | undefined): string[] {
     if (!train) return [];
     const need = trainLength(train);
@@ -282,6 +375,8 @@ interface CoasterState {
     cursor: TrackPose | null;
     occupancy: Occupancy;
     status: string;
+    /** RideMode (34 = circuit continu à sections de bloc). */
+    mode: number;
     hasEntrance: boolean;
     hasExit: boolean;
 }
@@ -312,6 +407,7 @@ async function loadCoaster(ctx: ToolContext, rideId: number): Promise<CoasterSta
         closed: circuit.closed,
         stationStart: first ? beginPose(first, table.require(first.type)) : null,
         cursor: !circuit.closed && last ? endPose(last, table.require(last.type)) : null,
+        mode: detail.mode,
         occupancy,
         status: detail.status,
         hasEntrance: !!station?.entrance,
@@ -497,6 +593,9 @@ async function measureFor(ctx: ToolContext, rideId: number, maxTicks: number, re
 }
 
 /** Version compacte pour les réponses d'outils (sans les entrées brutes). */
+/** `space` et `suggestedBounds` de coaster_describe. */
+const spaceSection = (p: SpaceProfile) => ({ space: spaceView(p), suggestedBounds: suggestedBounds(p) });
+
 const reportView = (r: RatingReport) => ({ ...r, inputs: undefined, raw: undefined });
 
 // ---------------------------------------------------------------------------
@@ -559,7 +658,14 @@ function failureMessage(pieces: PlannedPiece[], r: BatchResult, offset = 0): { i
 }
 
 /** Contrôles côté serveur : continuité, collisions avec le circuit, terrain et obstacles. */
-function checkPieces(st: CoasterState, env: TrackEnv, start: TrackPose, pieces: PlannedPiece[], occ: Occupancy): { index: number; piece: string; tile: TileXY; message: string }[] {
+function checkPieces(
+    st: CoasterState,
+    env: TrackEnv,
+    start: TrackPose,
+    pieces: PlannedPiece[],
+    occ: Occupancy,
+    bounds?: TrackBounds,
+): { index: number; piece: string; tile: TileXY; message: string }[] {
     const problems: { index: number; piece: string; tile: TileXY; message: string }[] = [];
     let pose = start;
     // Les blocs de la pièce précédente ne comptent pas : deux pièces voisines peuvent partager une tuile
@@ -573,7 +679,7 @@ function checkPieces(st: CoasterState, env: TrackEnv, start: TrackPose, pieces: 
         const c = occ.conflict(el);
         if (c) problems.push({ index: i, piece: p.name, tile: c, message: `croise le circuit (bloc au niveau ${c.z / 16} : les dégagements se chevauchent)` });
         for (const e of el) {
-            const why = blockProblem(env, e);
+            const why = blockProblem(env, e) ?? (bounds ? boundsProblem(bounds, e) : null);
             if (why) {
                 problems.push({ index: i, piece: p.name, tile: e, message: `${why} (niveau ${e.z / 16})` });
                 break;
@@ -618,7 +724,7 @@ async function closeCircuit(
     env: TrackEnv,
     from: TrackPose,
     occ: Occupancy,
-    opts: { inversions: boolean; diagonals: boolean; maxPieces: number },
+    opts: { inversions: boolean; diagonals: boolean; maxPieces: number; bounds?: TrackBounds },
 ): Promise<ClosureOutcome> {
     if (!st.stationStart) return { pieces: null, expansions: 0, attempts: 0, rejected: [] };
     // Le plan aboutit déjà à l'entrée de la station : rien à ajouter, le circuit est fermé.
@@ -629,7 +735,7 @@ async function closeCircuit(
     let expansions = 0;
     const zMin = Math.min(st.stationStart.z, from.z, ...st.pieces.map((p) => p.z)) - 16 * 4;
     for (let attempt = 1; attempt <= 5; attempt++) {
-        const res = planClosure(catalog, from, st.stationStart, occ, env, { forbidden, maxPieces: opts.maxPieces, zMin: Math.max(16, zMin) });
+        const res = planClosure(catalog, from, st.stationStart, occ, env, { forbidden, maxPieces: opts.maxPieces, zMin: Math.max(16, zMin), bounds: opts.bounds });
         expansions += res?.expansions ?? 0;
         if (!res) return { pieces: null, expansions, attempts: attempt, rejected };
         const q = await runBatch(ctx, res.pieces.map((p) => placeOp(st.rideId, st.rideType, p)), true);
@@ -1033,7 +1139,11 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 "simulation), construit, puis referme le circuit jusqu'à la station (close: true, recherche A* ; les montées de la fermeture sont à chaîne). " +
                 `${MACRO_DOC} Hauteurs en niveaux (1 niveau = 16 unités). plan: [] avec close: true ne fait que refermer. dryRun: true montre le plan ` +
                 "sans rien poser. Renvoie les pièces (résumé), l'état fermé ou non, la pose de fin, layout (pièces, longueur en tuiles, emprise, " +
-                "densité, inversions : à comparer avec coaster_describe d'un circuit de référence) et warnings (lift en courbe, virage serré à grande vitesse). " +
+                "densité, inversions : à comparer avec coaster_describe d'un circuit de référence), space (couverture, tuiles empilées, plus grand vide, éléments isolés) " +
+                "et warnings (lift en courbe, virage serré à grande vitesse, ISOLÉ). bounds { x1, y1, x2, y2 } impose un rectangle au plan et à la fermeture " +
+                "(gardé pour les appels suivants) : la compacité compte autant que les notes quand on imite une référence. " +
+                "reference { ride | design } suit la longueur de piste, la densité, l'empilement et les trains de la référence (target, avec remainingTiles) ; " +
+                "la fermeture est refusée sous 90 % de sa longueur ou avec moins de trains. " +
                 "speeds donne, pour chaque macro, la vitesse estimée en entrée, en sortie et au plus bas (km/h) ; les warnings signalent un CALAGE probable " +
                 "et tout élément abordé TROP RAPIDE ou TROP LENT par rapport aux designs RCT2 (ex. zero-g roll au pied d'une grande chute : mets une colline avant). " +
                 "Un grand circuit se construit en plusieurs appels close: false (10 à 20 macros chacun), en vérifiant layout et speeds, puis plan: [] close: true. " +
@@ -1047,10 +1157,20 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 allowInversions: z.boolean().default(false).describe("La fermeture peut utiliser des inversions."),
                 allowDiagonals: z.boolean().default(false).describe("La fermeture peut utiliser des pièces diagonales (plus lent)."),
                 maxClosurePieces: z.number().int().min(4).max(120).default(80),
+                bounds: zBounds,
+                reference: zReference,
+                allowBelowReference: z.boolean().default(false).describe("Ferme même si le circuit est plus court que la référence ou permet moins de trains."),
                 dryRun: zDryRun,
             },
         },
         async (args) => {
+            if (args.bounds && (args.bounds.x2 < args.bounds.x1 || args.bounds.y2 < args.bounds.y1)) toolError("INVALID_PARAMS", "bounds : x2 ≥ x1 et y2 ≥ y1.");
+            if (args.bounds === null) rideBounds.delete(args.ride);
+            else if (args.bounds && !args.dryRun) rideBounds.set(args.ride, args.bounds);
+            const bounds = args.bounds ?? (args.bounds === null ? undefined : rideBounds.get(args.ride));
+            if (args.reference === null) rideTargets.delete(args.ride);
+            const target = args.reference ? await loadReference(ctx, await segmentTable(ctx), args.reference) : args.reference === null ? undefined : rideTargets.get(args.ride);
+            if (args.reference && target && !args.dryRun) rideTargets.set(args.ride, target);
             if (!args.dryRun) await clearTrains(ctx, args.ride);
             const st = await loadCoaster(ctx, args.ride);
             if (st.closed) toolError("INVALID_PARAMS", `Le circuit de ${st.name} est déjà fermé (${st.pieces.length} pièces).`, { hint: "coaster_undo pour retirer des pièces, ou coaster_test." });
@@ -1064,11 +1184,14 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             }
             const env = await trackEnv(ctx, st, compiled.pieces, 24);
             const occ = st.occupancy;
-            const problems = checkPieces(st, env, st.cursor, compiled.pieces, occ);
+            const problems = checkPieces(st, env, st.cursor, compiled.pieces, occ, bounds);
             if (problems.length) {
+                const outside = problems.some((p) => /bounds/.test(p.message));
                 toolError("OBSTRUCTED", `Le plan ne passe pas : ${problems.slice(0, 3).map((p) => `pièce ${p.index} ${p.piece} en (${p.tile.x},${p.tile.y}) : ${p.message}`).join(" ; ")}.`, {
-                    details: { problems: problems.slice(0, 6), pieces: compiled.pieces.length },
-                    hint: "Change l'ordre ou le sens des virages, monte plus haut pour passer au-dessus, ou choisis une zone dégagée (get_region_map).",
+                    details: { problems: problems.slice(0, 6), pieces: compiled.pieces.length, bounds },
+                    hint: outside
+                        ? "Reste dans bounds : tourne vers l'intérieur de l'emprise, passe au-dessus ou au-dessous du circuit existant (écart de 2 à 3 niveaux suffit), ou raccourcis l'élément."
+                        : "Change l'ordre ou le sens des virages, monte plus haut pour passer au-dessus, ou choisis une zone dégagée (get_region_map).",
                 });
             }
             if (compiled.pieces.length) {
@@ -1085,18 +1208,43 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const peakBefore = Math.max(st.cursor.z, ...st.pieces.map((p) => p.z + (st.table.get(p.type)?.endZ ?? 0)));
             let closure: ClosureOutcome | null = null;
             if (args.close) {
-                closure = await closeCircuit(ctx, st, env, planEnd, occ, { inversions: args.allowInversions, diagonals: args.allowDiagonals, maxPieces: args.maxClosurePieces });
+                closure = await closeCircuit(ctx, st, env, planEnd, occ, { inversions: args.allowInversions, diagonals: args.allowDiagonals, maxPieces: args.maxClosurePieces, bounds });
                 if (!closure.pieces && args.dryRun) {
                     // Rapport en simulation : le plan seul reste valide.
                 } else if (!closure.pieces) {
                     toolError("NOT_FOUND", `Aucune fermeture trouvée depuis ${JSON.stringify(describePose(planEnd))} vers la station (${closure.expansions} états explorés).`, {
                         details: { rejected: closure.rejected, stationStart: describePose(st.stationStart) },
-                        hint: "Termine le plan plus près de la station, à une hauteur proche, orienté vers elle ; ou close: false puis coaster_next_pieces.",
+                        hint:
+                            "Termine le plan plus près de la station, à une hauteur proche, orienté vers elle ; ou close: false puis coaster_next_pieces." +
+                            (bounds ? " La fermeture reste dans bounds : vérifie qu'un passage existe (au-dessus ou au-dessous du circuit)." : ""),
                     });
                 }
             }
             const all = [...compiled.pieces, ...(closure?.pieces ?? [])];
             const styleWarnings = planWarnings(st.table, all, peakBefore);
+            // Compacité : mesures d'espace du circuit entier après le plan, et éléments du plan posés à l'écart.
+            const space = spaceProfile(st.table, [...st.pieces, ...all]);
+            styleWarnings.push(...isolationWarnings(space, st.pieces.length));
+            const spaceOut = {
+                ...spaceView(space, { elements: false }),
+                bounds: bounds ? `(${bounds.x1},${bounds.y1})-(${bounds.x2},${bounds.y2}), ${bounds.x2 - bounds.x1 + 1}×${bounds.y2 - bounds.y1 + 1}` : "aucun (bounds conseillé pour imiter une référence)",
+            };
+            // Cibles de la référence (COASTER_SPACE 9) : longueur, densité, empilement, trains ; fermeture refusée en dessous.
+            const closes = !!closure?.pieces || samePose(planEnd, st.stationStart);
+            const check = target ? checkTarget(target, layoutStats(st.table, [...st.pieces, ...all]), space, closes) : null;
+            if (check) styleWarnings.push(...check.warnings);
+            if (check?.blocking.length && !args.allowBelowReference) {
+                const msg = `Fermeture refusée : ${check.blocking.join(" ; ")}.`;
+                if (!args.dryRun) {
+                    toolError("INVALID_PARAMS", msg, {
+                        details: { target: check.view },
+                        hint:
+                            "Ne ferme pas encore : close: false, ajoute des éléments qui s'enroulent dans l'emprise (hélices, virages en pente, passages sous le lift et à travers les inversions) " +
+                            "et des block_brakes, puis referme. allowBelowReference: true pour passer outre.",
+                    });
+                }
+                styleWarnings.unshift(`REFUSÉ À LA POSE : ${msg}`);
+            }
             // Vitesse : depuis la station le long du circuit existant, puis le long du plan et de la fermeture.
             const model = speedModels(ctx).get(st.rideType);
             // Circuit existant et plan simulés d'un seul tenant : les voitures de queue sont encore sur les pièces d'avant.
@@ -1105,7 +1253,10 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const sim = whole.slice(st.pieces.length);
             const vCursor = st.pieces.length ? whole[st.pieces.length - 1].vOut : model.stationSpeed;
             styleWarnings.push(...speedWarnings(st.table, all, sim, elementWindows(ctx, st.table, model, train), args.plan as Macro[]));
-            if (closure?.pieces || samePose(planEnd, st.stationStart)) styleWarnings.push(...brakeRunWarnings(st.table, [...st.pieces, ...all], train));
+            if (closure?.pieces || samePose(planEnd, st.stationStart)) {
+                styleWarnings.push(...brakeRunWarnings(st.table, [...st.pieces, ...all], train));
+                styleWarnings.push(...blockWarnings(blockSections([...st.pieces, ...all]), st.mode));
+            }
             const speeds = {
                 cursorKmh: kmh(vCursor),
                 macros: macroProfile(all, sim, args.plan as Macro[]),
@@ -1125,6 +1276,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         planEnd: describePose(planEnd),
                         maxLevel: Math.max(...all.map((p) => p.z / 16), st.cursor.z / 16),
                         layout: layoutStats(st.table, [...st.pieces, ...all], false),
+                        space: spaceOut,
+                        target: check?.view,
                         stationLevel: stationZ / 16,
                         speeds,
                         warnings: styleWarnings,
@@ -1160,6 +1313,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     closed: after.closed,
                     maxLevel: Math.max(...done.map((p) => p.z / 16), 0),
                     layout: layoutStats(st.table, after.pieces, false),
+                    space: spaceOut,
+                    target: check?.view,
                     speeds,
                     warnings,
                     next_hints: after.closed
@@ -1479,7 +1634,10 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             title: "Relire un circuit (référence de style)",
             description:
                 "Décrit un circuit existant (ride) ou un design .td6 (design, nom comme dans coaster_list_designs) pour s'en inspirer : type, notes, " +
-                "layout (pièces, longueur en tuiles, emprise, densité, niveaux, pièces de chaîne, inversions) et la séquence complète des pièces groupées, " +
+                "layout (pièces, longueur en tuiles, emprise, densité, niveaux, pièces de chaîne, inversions, blocks : sections de bloc et trains permis), " +
+                "space (compacité : couverture, tuiles empilées, plus grand vide, éléments isolés, une ligne par élément avec ce qu'il croise), " +
+                "suggestedBounds (rectangle à imposer à coaster_build_plan pour rester aussi compact), target (longueur de piste, densité, empilement, " +
+                "dessous du lift, trains : ce que coaster_build_plan { reference } fait respecter) et la séquence complète des pièces groupées, " +
                 "avec la hauteur (L, en niveaux au-dessus de la station) au début et à la fin de chaque groupe et la vitesse d'entrée estimée (@km/h). " +
                 "Pour un circuit du parc, coaster_test { ride } donne en plus les vitesses et G mesurés. À lire AVANT de construire « dans le style de X » : " +
                 "reprends le type d'attraction, la forme du lift, l'ordre et la taille des éléments, puis vise une longueur et une densité comparables.",
@@ -1505,16 +1663,22 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 return result({
                     budget: BUDGET.readLarge,
                     response: {
-                        summary: `${entry.name} (${rideTypeName(td.rideType)}, véhicule ${td.vehicleObject}) : ${stats.pieces} pièces, ${stats.lengthTiles} tuiles de piste sur ${stats.footprint.size}, ${stats.inversions} inversion(s).`,
+                        summary:
+                            `${entry.name} (${rideTypeName(td.rideType)}, véhicule ${td.vehicleObject}) : ${stats.pieces} pièces, ${stats.lengthTiles} tuiles de piste sur ${stats.footprint.size}, ${stats.inversions} inversion(s), ` +
+                            `${stats.blocks.sections} sections de bloc (${td.numberOfTrains} train(s) de ${td.carsPerTrain} voitures, ${stats.blocks.maxTrains} permis).`,
                         rideType: rideTypeName(td.rideType),
                         vehicle: td.vehicleObject,
                         expected: td.stats,
+                        trains: { design: td.numberOfTrains, carsPerTrain: td.carsPerTrain, mode: td.rideMode, maxTrains: stats.blocks.maxTrains },
                         layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
                         relief: reliefView(reliefProfile(table, layout.pieces)),
+                        ...spaceSection(spaceProfile(table, layout.pieces, { closed: layout.closed })),
+                        target: layout.closed ? referenceTarget(entry.name, table, layout.pieces) : undefined,
                         sequence: describeSequence(table, layout.pieces, baseZ, simulate(speedModels(ctx).get(td.rideType), table, layout.pieces, speedModels(ctx).get(td.rideType).stationSpeed).map((x) => kmh(x.vIn))),
                         inversionsAvailable: ride ? availableInversions(table, ride) : undefined,
                         next_hints: [
                             "Pour t'en inspirer : même objet de véhicule (list_objects type ride), lift droit de hauteur comparable, puis traduis la séquence en macros (inversion, turn steep_down, helix…) en plusieurs coaster_build_plan close: false ; compare layout à chaque étape.",
+                            "Reprends aussi ses sections de bloc (layout.blocks.boundaries) avec la macro block_brakes, pour faire tourner autant de trains (ride_configure { trains }).",
                         ],
                     },
                 });
@@ -1536,15 +1700,27 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 budget: BUDGET.readLarge,
                 response: {
                     rating: rating && "computed" in rating ? reportView(rating) : rating,
-                    summary: `${st.name} (${st.ride.name}) : ${stats.pieces} pièces, ${stats.lengthTiles} tuiles de piste sur ${stats.footprint.size}, ${stats.inversions} inversion(s)${st.closed ? "" : ", circuit ouvert"}.`,
+                    summary:
+                        `${st.name} (${st.ride.name}) : ${stats.pieces} pièces, ${stats.lengthTiles} tuiles de piste sur ${stats.footprint.size}, ${stats.inversions} inversion(s)${st.closed ? "" : ", circuit ouvert"}, ` +
+                        `${stats.blocks.sections} sections de bloc (${stats.blocks.maxTrains} train(s) permis).`,
                     rideType: st.ride.name,
                     object: detail.object,
+                    trains: {
+                        running: detail.vehicles,
+                        mode: detail.mode,
+                        // Hors mode à sections, le jeu compte les trains par longueur de station : un seul en pratique.
+                        maxTrains: BLOCK_SECTIONED_MODES.has(detail.mode) ? stats.blocks.maxTrains : 1,
+                        maxTrainsBlockSectioned: stats.blocks.maxTrains,
+                    },
                     ratings: { excitement: detail.excitement, intensity: detail.intensity, nausea: detail.nausea },
                     closed: st.closed,
                     layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
                     relief: reliefView(reliefProfile(table, st.pieces)),
+                    ...spaceSection(spaceProfile(table, st.pieces, { closed: st.closed })),
+                    target: st.closed ? referenceTarget(st.name, table, st.pieces) : undefined,
                     sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed, await rideTrain(ctx, st.rideId)).map((x) => kmh(x.vIn))),
                     inversionsAvailable: availableInversions(table, st.ride),
+                    warnings: st.closed ? blockWarnings(stats.blocks, detail.mode) : [],
                 },
             });
         },
@@ -1589,7 +1765,9 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             description:
                 "Met côte à côte un circuit (ride) et sa référence (reference), tous deux dans le parc : notes, écart d'excitation par composante " +
                 "(vitesse moyenne, inversions, virages, chutes, proximité…, au grain le plus fin), emprise, densité, longueur, durée, vitesses, " +
-                "profil de vitesse le long du parcours (km/h tous les 10 % de la longueur), G par cinquième du parcours, suite des éléments. " +
+                "profil de vitesse le long du parcours (km/h tous les 10 % de la longueur), G par cinquième du parcours, suite des éléments, " +
+                "sections de bloc et trains permis (blockLevers si le circuit en permet moins que la référence), compacité (space : couverture, " +
+                "tuiles empilées, plus grand vide, éléments isolés ; spaceLevers si le circuit est moins compact que la référence). " +
                 "Conclut par les trois leviers qui rapportent le plus. Teste chaque circuit qui n'a pas de mesure pour sa forme actuelle " +
                 "(mesures gardées entre les appels ; retest: true pour forcer).",
             input: {
@@ -1625,20 +1803,32 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 maxNegG: m.stats.maxNegativeVerticalGs,
                 maxLatG: m.stats.maxLateralGs,
                 levels: `${m.layout.minLevel}→${m.layout.maxLevel}`,
+                // Recalculé : les mesures gardées avant l'ajout de blocks ne l'ont pas.
+                blocks: blockSections(m.pieces),
                 measuredAt: m.measuredAt,
             });
             const dE = Math.round((b.ratings.excitement - a.ratings.excitement) * 100) / 100;
             // Relief (COASTER_SPACE 8) : la note ne dit pas si le circuit est plus plat que la référence.
             const reliefA = reliefProfile(table, a.pieces);
             const reliefB = reliefProfile(table, b.pieces);
+            // Compacité (COASTER_SPACE 4.1) : aussi importante que les notes pour imiter la référence.
+            const spaceA = spaceProfile(table, a.pieces, { closed: true });
+            const spaceB = spaceProfile(table, b.pieces, { closed: true });
             return result({
                 budget: BUDGET.readLarge,
                 response: {
                     summary:
                         `${a.name} : ${a.ratings.excitement} / ${a.ratings.intensity} / ${a.ratings.nausea} ; ${b.name} (référence) : ${b.ratings.excitement} / ${b.ratings.intensity} / ${b.ratings.nausea}` +
-                        ` ; écart d'excitation ${dE >= 0 ? "−" : "+"}${Math.abs(dE).toFixed(2)}.`,
+                        ` ; écart d'excitation ${dE >= 0 ? "−" : "+"}${Math.abs(dE).toFixed(2)}` +
+                        ` ; emprise ${spaceA.footprint.w}×${spaceA.footprint.h} contre ${spaceB.footprint.w}×${spaceB.footprint.h}, couverture ${Math.round(spaceA.coverage * 100)} % contre ${Math.round(spaceB.coverage * 100)} %, empilées ${spaceA.stackedTiles} contre ${spaceB.stackedTiles}.`,
                     levers,
                     reliefLevers: reliefLevers(reliefA, reliefB),
+                    blockLevers: blockLevers(blockSections(a.pieces), blockSections(b.pieces)),
+                    spaceLevers: [
+                        ...targetLevers(referenceTarget(a.name, table, a.pieces), referenceTarget(b.name, table, b.pieces)).filter((l) => /^(longueur|densité)/.test(l)),
+                        ...spaceLevers(spaceA, spaceB),
+                    ],
+                    space: { ride: spaceView(spaceA, { elements: false }), reference: spaceView(spaceB, { elements: false }) },
                     relief: { ride: reliefView(reliefA), reference: reliefView(reliefB) },
                     ratings: {
                         ride: a.ratings,

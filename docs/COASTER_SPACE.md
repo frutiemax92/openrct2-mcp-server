@@ -62,7 +62,11 @@ Valeurs de référence à figer dans les tests unitaires, calculées sur `Fright
 - Une image du plan, comme `get_region_map { format: png }` : couleur = niveau, numéro d'élément, hachures sur les tuiles empilées, vide le plus grand encadré. Le texte seul ne suffit pas pour voir le vide.
 - `coaster_compare` ajoute ces mesures côte à côte et des **leviers d'espace**, rédigés comme ceux des notes : « grande demi-boucle isolée (voisin à 1 tuile, 0 partagée) ; dans la référence, 0 tuile et 5 partagées à 1,5 niveau » ; « emprise 1,3 × la référence » ; « vide 19×6 au centre ».
 
+> **Fait (8 octobre 2026), étape 2 sans l'image.** `coaster_describe` (circuit ou `.td6`) renvoie `space` (`spaceView` : emprise, `coveragePct`, `stackedTiles`, `largestVoid`, `liftShared`, éléments isolés et une ligne par élément avec son croisement principal) et `suggestedBounds` (emprise + 10 %, Frightmare : 27×19). `coaster_compare` renvoie `space` côte à côte, `spaceLevers` (`planners/space.ts`) et l'emprise, la couverture et les tuiles empilées dans son résumé. L'image du plan reste à faire.
+
 ### 4.2 Construction : `coaster_build_plan`, fermeture, recherche de section
+
+> **Fait (8 octobre 2026), étape 4.** `coaster_build_plan { bounds: { x1, y1, x2, y2, minLevel?, maxLevel? } }` : toute pièce du plan dont un bloc sort du rectangle (ou des niveaux absolus) est refusée avant simulation, avec la pièce fautive (`boundsProblem`). La fermeture A* ne pose rien hors de `bounds`. `bounds` est gardé en mémoire du serveur pour les appels suivants sur le même circuit (`null` l'efface ; un `dryRun` ne l'enregistre pas). La réponse donne `space` (vue sans le détail par élément, plus le rectangle en vigueur) et un avertissement `ISOLÉ` par élément du plan posé à 2 tuiles ou plus du reste sans rien partager. La fermeture A* préfère, à coût égal, les pièces posées sur une tuile déjà occupée par le circuit (bonus de 0,4 par pièce). Reste à faire : citer, dans l'avertissement `ISOLÉ`, ce que fait la référence pour le même genre d'élément.
 
 - **`bounds`** (rectangle de tuiles, et en option niveaux min et max) sur `coaster_build_plan`, sur la fermeture A* et sur `coaster_search_section` (P4). Une pièce hors du rectangle est refusée avant toute simulation, avec l'élément fautif. Valeur conseillée pour imiter une référence : son emprise, majorée de 10 % au plus.
 - **Mesures après chaque appel** : `layout` gagne `coverage`, `stackedTiles`, `largestVoid` et la liste des éléments isolés. Un avertissement `ISOLÉ` part pour tout élément posé à 2 tuiles ou plus du reste sans rien partager, avec ce que fait la référence pour le même genre d'élément.
@@ -101,11 +105,48 @@ En partant d'une zone libre et de la consigne « dans le style de Frightmare »,
 | Étape | Contenu | Validation |
 |---|---|---|
 | 1 — **fait** | `planners/space.ts` + tests (valeurs de la section 1 sur Frightmare.TD6) | tests unitaires, puis en jeu sur les rides 5 et 9 : mêmes chiffres que la section 1 (vérifié, voir section 3) |
-| 2 | `space` dans `coaster_describe`, `coaster_compare` (mesures, leviers d'espace, image) | lecture en jeu des deux circuits |
+| 2 — **fait sauf l'image** | `space` dans `coaster_describe`, `coaster_compare` (mesures, leviers d'espace, image) | lecture en jeu des deux circuits |
 | 3 | Quarts de tuile dans le dégagement (fin de P6, collisions) | `dryRun` des croisements serrés de Frightmare |
-| 4 | `bounds`, mesures et avertissements `ISOLÉ` dans `coaster_build_plan` et la fermeture | construction en jeu d'une section dans un rectangle imposé |
+| 4 — **fait** | `bounds`, mesures et avertissements `ISOLÉ` dans `coaster_build_plan` et la fermeture | construction en jeu d'une section dans un rectangle imposé |
 | 5 | `coaster_search_section` (P4) avec `bounds` et objectifs d'empilement | fermeture d'une seconde moitié qui passe sous le lift |
 | 6 | Essai complet : critère de la section 6 | circuit construit en jeu, comparé à Frightmare |
+
+## 7 bis. Night Terror : 3 trains, mais pas compact (8 octobre 2026)
+
+Construit « dans le style de Frightmare » en respectant ses sections de bloc (COASTER_REFERENCE P9), avant les étapes 2 et 4. Notes à 0,04 de la référence (7,36 / 8,10 / 4,22), 3 trains, mais l'utilisateur a relevé que le circuit n'avait pas la compacité de la référence. Mesures (`spaceProfile` sur les pièces relevées par `coaster_test`) :
+
+| | Frightmare | Night Terror (ride 10) |
+|---|---|---|
+| Emprise | 24×17 = 408 tuiles | 29×26 = **754** tuiles (1,85 ×) |
+| Couverture | 45 % | 30 % |
+| Tuiles empilées | 80 | **11** |
+| Lift : tuiles avec de la piste dessous | 11 | 1 |
+| Éléments isolés | 1 | **8** |
+
+Cause : le serveur ne donnait l'emprise et la densité qu'après coup, sans objectif ni avertissement. Le circuit a été construit élément par élément vers l'espace libre, puis ramené à la station par l'extérieur. `spaceLevers` rédige aujourd'hui ces écarts : « emprise 1,85 × la référence : reconstruis dans bounds 27×19 », « tuiles empilées 11 contre 80 », « lift : 1 tuile partagée contre 11 », « éléments isolés 8 contre 1 ». Leçon : fixer `bounds` dès le premier plan, garder le dessous du lift libre pour la seconde moitié, et réserver le couloir d'arrivée en gare.
+
+## 7 ter. Longueur de piste imposée par la référence (8 octobre 2026)
+
+### Constat
+
+Night Terror refait dans `bounds` 27×19 (checkpoint `night-terror-compact`) : emprise 26×16 = 416 tuiles, 1,02 × Frightmare. Le circuit paraît pourtant bien moins compact, et l'utilisateur l'a relevé. Les mesures étaient justes, recomptées tuile par tuile sur la carte du jeu : 159 tuiles de piste sur 416 pour Night Terror (38 %), 183 sur 408 pour Frightmare (45 %). L'erreur était dans ce que le serveur imposait :
+
+- **L'emprise seule ne dit rien de la densité.** Frightmare pose 205 tuiles de piste (1140 m, 112 pièces) dans son rectangle. Night Terror n'en pose que 150 (832 m) : c'est un contour fin qui remplit la même boîte. Densité 0,36 contre 0,50.
+- **`bounds` borne sans remplir.** Un circuit court tient toujours dans le rectangle de la référence. Rien n'obligeait à poser autant de piste qu'elle.
+- **`spaceLevers` ignorait la longueur.** Couverture, empilement et dessous du lift étaient signalés, mais pas l'écart de longueur, qui est le plus gros. Claude a lu « emprise 1,02 × » comme un succès.
+
+### Fait
+
+- `planners/target.ts` : `referenceTarget` tire d'un circuit fermé (ride du parc ou `.td6`) sa longueur de piste (`lengthTiles`), son nombre de pièces, son emprise, sa densité, sa couverture, ses tuiles empilées, le dessous du lift (`liftShared`), ses inversions et ses trains permis. `checkTarget` compare le circuit en cours à ces cibles, et `targetLevers` rédige les écarts.
+- `coaster_build_plan { reference: { ride } | { design } }` : la référence est gardée pour les appels suivants sur le même circuit (`null` l'efface ; un `dryRun` ne l'enregistre pas). Chaque réponse donne `target` : longueur actuelle / référence avec le minimum pour fermer, `remainingTiles`, densité, tuiles empilées, dessous du lift et trains, chacun sous la forme « actuel / référence ». Sur un circuit ouvert, l'avertissement `LONGUEUR` dit combien de tuiles il reste à poser.
+- **Fermeture refusée** si le circuit fermé fait moins de 90 % de la longueur de piste de la référence (`LENGTH_MIN`), ou s'il permet moins de trains qu'elle. Avec `dryRun`, la réponse porte « REFUSÉ À LA POSE ». `allowBelowReference: true` passe outre. Au-delà de 120 % (`LENGTH_MAX`), simple avertissement. Les écarts de densité (moins de 85 % de la référence), d'empilement (moins de 60 %) et de dessous du lift (moins de la moitié) deviennent des avertissements à la fermeture.
+- `coaster_describe` renvoie `target`, et `suggestedBounds.hint` propose `bounds` et `reference` ensemble. `coaster_compare` ajoute à `spaceLevers` les leviers de longueur et de densité.
+- Vérifié hors jeu sur les pièces relevées de Night Terror (ride 10) : `target` donne « 150 / 205 (73 %, minimum 185 pour fermer) », et la fermeture aurait été refusée (« circuit trop court »).
+- Consigne de construction (instructions du serveur) : laisser de la place des deux côtés du lift, car la seconde moitié passe dessous. Night Terror avait son lift collé au bord de `bounds`, si bien qu'aucun passage dessous n'était possible.
+
+### Reste à faire
+
+- Vérifier en jeu que des croisements refusés par le serveur (« croise le circuit » à 2,5-4 niveaux) le sont aussi par le jeu. Sinon, finir les quarts de tuile (section 4.3, étape 3) : un contrôle trop prudent écarte la piste d'elle-même et empêche la densité de la référence.
 
 ## 8. Verticalité (relief)
 

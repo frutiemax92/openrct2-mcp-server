@@ -107,7 +107,7 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 
 **Comment.** Tout se calcule à partir des pièces et de `pieceElements`. Le découpage reprend `elementKind`.
 
-> **En cours (7 octobre 2026).** Découpage en éléments, croisements, plus grand vide et volume libre calculés par `planners/space.ts` (COASTER_SPACE.md, étape 1) ; Frightmare et Nightmare Frenzy redonnent les chiffres de COASTER_SPACE.md section 1. Reste à les exposer dans `coaster_describe` et `coaster_compare`, avec l'image du plan (étape 2).
+> **En cours (7 octobre 2026).** Découpage en éléments, croisements, plus grand vide et volume libre calculés par `planners/space.ts` (COASTER_SPACE.md, étape 1) ; Frightmare et Nightmare Frenzy redonnent les chiffres de COASTER_SPACE.md section 1. Exposés le 8 octobre 2026 : `space` et `suggestedBounds` dans `coaster_describe`, `space` et `spaceLevers` dans `coaster_compare`, `bounds` et avertissements `ISOLÉ` dans `coaster_build_plan` (COASTER_SPACE.md 4.1, 4.2 et 7 bis). Reste l'image du plan.
 
 ### P4. Recherche de section sous contraintes (`coaster_search_section`)
 
@@ -155,6 +155,21 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 - Empreinte du circuit (nombre de pièces + hachage) dans chaque réponse `coaster_*`. Avertir si elle diffère de la dernière vue par ce serveur, et si la date du jeu a reculé (parc rechargé).
 - Fichier de calage versionné (`version`, `serverVersion`, méthode d'ajustement). Refuser d'écrire avec une méthode plus ancienne que celle du fichier.
 - `session_info` : version du code serveur chargé et date de compilation de `dist/`, pour savoir si un `/mcp` est nécessaire.
+
+### P9. Sections de bloc et nombre de trains — fait
+
+**Pourquoi.** Nightmare Frenzy, construit « dans le style de Frightmare », ne peut faire tourner qu'un train, alors que Frightmare en fait tourner 3. Le circuit n'a pas de frein de bloc. Le serveur ne disait ni combien de trains la référence fait tourner, ni où elle découpe ses sections. `ride_configure` ne savait pas non plus régler le nombre de trains.
+
+**Règle du jeu.** `TrackPlaceAction.cpp` incrémente `ride.numBlockBrakes` pour chaque frein de bloc (droit ou diagonal), chaque fin de lift (`up25ToFlat`, `up60ToFlat` et leurs diagonales, posés avec chaîne) et chaque câble (`cableLiftHill`). En mode à sections de bloc, `Ride.cpp` permet `stations + numBlockBrakes − 1` trains, au moins 1 et au plus 255. Hors de ce mode, le nombre de trains se calcule sur la longueur de la station, et en pratique un seul train est utilisable. Le jeu passe seul en mode à sections de bloc (34, `continuousCircuitBlockSectioned`) à la pose d'un frein de bloc. Sans frein de bloc, ce mode se règle à la main. C'est le cas des bobsleighs de RCT2 (Penguin Paradise : 3 trains avec 3 sommets de lift et aucun frein de bloc). L'API de script n'expose ni `numBlockBrakes` ni `maxTrains`, donc le serveur les recompte sur les pièces.
+
+**Fait (8 octobre 2026).**
+
+- `blockSections(pieces)` (`planners/track.ts`) donne `stations`, `blockBrakes`, `liftTops`, `sections`, `maxTrains` (sections − 1), `autoBlockMode` (au moins un frein de bloc) et `boundaries` (« `lift@24, block@68, block@108, station@109` », indices de pièce). Il est inclus dans `layoutStats`, donc dans `layout.blocks` de `coaster_describe`, `coaster_build_plan` et `coaster_next_pieces`.
+- `coaster_describe` renvoie `trains` : pour un design, le nombre de trains et de voitures du fichier, son mode et `maxTrains` ; pour un circuit du parc, les trains en marche, le mode et `maxTrains` dans ce mode.
+- `coaster_build_plan` avertit à la fermeture du circuit : « UN SEUL TRAIN possible » s'il n'y a qu'une section, ou, sans frein de bloc, que le mode à sections reste à régler.
+- `coaster_compare` renvoie `layout.*.blocks` et `blockLevers` quand le circuit permet moins de trains que la référence.
+- `ride_configure { trains, carsPerTrain }` (`ridesetvehicle`, attraction fermée). Le jeu ramène la valeur au maximum permis sans erreur.
+- Vérifié sur les designs RCT2 installés : chaque design en mode à sections de bloc a au plus `maxTrains` trains. Frightmare a 4 sections (lift, 2 freins de bloc, station), donc 3 trains, comme son fichier.
 
 ## 4. Ordre de mise en œuvre et critère de réussite
 

@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { TRACK_ELEM_TYPES } from "@openrct2-claude/protocol";
 import { describe, expect, it } from "vitest";
-import { SegmentTable } from "../src/planners/track.js";
+import { SegmentTable, blockSections } from "../src/planners/track.js";
 import { decodeRle, designDirs, designLayout, loadLibrary, parseTrackDesign } from "../src/planners/td6.js";
 
 /** Codage RLE en littéraux seuls (suffisant pour le décodeur), plus 4 octets de somme de contrôle. */
@@ -88,5 +88,35 @@ describe("td6", () => {
             if (a.closed) closed++;
         }
         if (lib.length) expect(closed / lib.length).toBeGreaterThan(0.85);
+    });
+
+    it("compte les sections de bloc comme le jeu (stations + freins de bloc + sommets de lift)", () => {
+        const T = TRACK_ELEM_TYPES as Record<string, number>;
+        const p = (name: string, chain = false) => ({ type: T[name], x: 0, y: 0, z: 0, direction: 0 as const, chain });
+        const station = [p("endStation"), p("middleStation"), p("beginStation")];
+        const lift = [p("flatToUp25", true), p("up25", true), p("up25ToFlat", true)];
+        const noBlock = blockSections([...station, ...lift, p("flat"), p("flat")]);
+        expect(noBlock).toMatchObject({ stations: 1, blockBrakes: 0, liftTops: 1, sections: 2, autoBlockMode: false, maxTrains: 1 });
+        const withBlock = blockSections([...station, ...lift, p("flat"), p("blockBrakes"), p("flat")]);
+        expect(withBlock).toMatchObject({ sections: 3, autoBlockMode: true, maxTrains: 2, boundaries: "station@0, lift@5, block@7" });
+        // Sans chaîne, la fin de montée ne ferme pas de section.
+        expect(blockSections([...station, p("up25ToFlat"), p("blockBrakes")]).maxTrains).toBe(1);
+    });
+
+    it.skipIf(!hasLibrary)("designs à sections de bloc : leur nombre de trains tient dans les sections comptées", () => {
+        const lib = loadLibrary(dirs).filter((e) => e.design && (e.design.rideMode === 34 || e.design.rideMode === 36));
+        const bad: string[] = [];
+        for (const e of lib) {
+            const l = designLayout(e.design!, table!, { x: 50, y: 50, z: 160 }, 0);
+            if (!l.closed) continue;
+            const b = blockSections(l.pieces);
+            if (e.design!.numberOfTrains > b.maxTrains) bad.push(`${e.name}: ${e.design!.numberOfTrains} > ${b.maxTrains} (${b.boundaries})`);
+        }
+        expect(bad).toEqual([]);
+        const fm = lib.find((e) => /frightmare/i.test(e.name));
+        if (fm) {
+            const b = blockSections(designLayout(fm.design!, table!, { x: 50, y: 50, z: 160 }, 0).pieces);
+            console.log(`Frightmare : ${fm.design!.numberOfTrains} trains, ${JSON.stringify(b)}`);
+        }
     });
 });

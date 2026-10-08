@@ -437,3 +437,85 @@ export function reliefLevers(ride: ReliefProfile, ref: ReliefProfile): string[] 
     if (ref.climbAfterLift - ride.climbAfterLift >= 8) out.push(`montée totale sur l'élan ${ride.climbAfterLift} niveaux contre ${ref.climbAfterLift}`);
     return out;
 }
+
+// ---------------------------------------------------------------------------
+// Vue et leviers d'espace (COASTER_SPACE.md, sections 4.1 et 4.2)
+// ---------------------------------------------------------------------------
+
+const pct = (x: number): number => Math.round(x * 100);
+const lvl = (x: number): number => Math.round(x * 10) / 10;
+
+/** Une ligne par élément : écart au reste du circuit, tuiles partagées et croisement principal. */
+function elementLine(e: ElementSpace): string {
+    const c = e.crossings[0];
+    return (
+        `${e.kind} (${e.from}-${e.to}) : voisin ${e.nearestGap ?? ">4"}, partagées ${e.shared}` +
+        (e.minLevelGap !== null ? ` à ${lvl(e.minLevelGap)} niv` : "") +
+        (c ? ` ; ${c.side} ${c.kind} (${c.tiles} t)` : "") +
+        (e.isolated ? " — ISOLÉ" : "")
+    );
+}
+
+/** Vue compacte du profil d'espace pour les réponses des outils. */
+export function spaceView(p: SpaceProfile, opts: { elements?: boolean } = {}): Record<string, unknown> {
+    const lift = p.elements.find((e) => e.kind === "lift");
+    return {
+        footprint: `${p.footprint.w}×${p.footprint.h} (${p.footprint.area} tuiles)`,
+        coveragePct: pct(p.coverage),
+        stackedTiles: p.stackedTiles,
+        largestVoid: p.largestVoid ? `${p.largestVoid.w}×${p.largestVoid.h} en (${p.largestVoid.x},${p.largestVoid.y}), ${pct(p.largestVoid.share)} %` : null,
+        liftShared: lift ? lift.shared : undefined,
+        isolated: p.isolated.map((i) => elementLine(p.elements[i])),
+        elements: opts.elements === false ? undefined : p.elements.map(elementLine),
+    };
+}
+
+/**
+ * Rectangle à imposer (`bounds` de coaster_build_plan) pour imiter une référence : son emprise majorée de `margin`
+ * (10 % par défaut, COASTER_SPACE 4.2), en largeur × hauteur. À placer sur une zone libre.
+ */
+export function suggestedBounds(p: SpaceProfile, margin = 0.1): { w: number; h: number; hint: string } {
+    const w = Math.ceil(p.footprint.w * (1 + margin));
+    const h = Math.ceil(p.footprint.h * (1 + margin));
+    return {
+        w,
+        h,
+        hint:
+            `coaster_build_plan { bounds: { x1, y1, x2: x1 + ${w - 1}, y2: y1 + ${h - 1} }, reference: { ride | design } } (ou ${h}×${w} tourné) : ` +
+            "bounds borne l'emprise, reference impose la longueur de piste (fermeture refusée sous 90 %) ; la même longueur dans la même emprise donne la densité. " +
+            "Laisse de la place des deux côtés du lift : la seconde moitié passe dessous.",
+    };
+}
+
+/**
+ * Leviers d'espace : ce qui rend le circuit moins compact que la référence, rédigé comme les leviers de note
+ * (COASTER_SPACE 4.1). Vide si le circuit est au moins aussi compact.
+ */
+export function spaceLevers(ride: SpaceProfile, ref: SpaceProfile): string[] {
+    const out: string[] = [];
+    const ratio = ref.footprint.area ? ride.footprint.area / ref.footprint.area : 1;
+    const sides = [ride.footprint.w, ride.footprint.h].sort((a, b) => b - a);
+    const refSides = [ref.footprint.w, ref.footprint.h].sort((a, b) => b - a);
+    if (ratio > 1.1 || sides[0] > refSides[0] * 1.2 || sides[1] > refSides[1] * 1.2) {
+        out.push(
+            `emprise ${ride.footprint.w}×${ride.footprint.h} = ${ride.footprint.area} tuiles, ${ratio.toFixed(2)} × la référence (${ref.footprint.w}×${ref.footprint.h}) : ` +
+                `reconstruis dans bounds ${suggestedBounds(ref).w}×${suggestedBounds(ref).h}`,
+        );
+    }
+    if (ref.coverage - ride.coverage >= 0.05) out.push(`couverture ${pct(ride.coverage)} % contre ${pct(ref.coverage)} % : la piste occupe trop peu de son emprise`);
+    if (ride.stackedTiles < ref.stackedTiles * 0.7)
+        out.push(`tuiles empilées ${ride.stackedTiles} contre ${ref.stackedTiles} : fais passer la seconde moitié sous le lift, sous la première chute et à travers les grandes inversions`);
+    const refLift = ref.elements.find((e) => e.kind === "lift");
+    const lift = ride.elements.find((e) => e.kind === "lift");
+    if (refLift && lift && refLift.shared > 0 && lift.shared < refLift.shared / 2) {
+        const under = refLift.crossings.map((c) => `${c.kind} ${c.tiles} t à ${lvl(c.minLevelGap)} niv`).join(", ");
+        out.push(`lift : ${lift.shared} tuile(s) partagée(s) contre ${refLift.shared} dans la référence (${under})`);
+    }
+    if (ride.largestVoid && (!ref.largestVoid || ride.largestVoid.share > ref.largestVoid.share + 0.05)) {
+        const v = ride.largestVoid;
+        out.push(`vide ${v.w}×${v.h} en (${v.x},${v.y}), ${pct(v.share)} % de l'emprise (référence : ${ref.largestVoid ? pct(ref.largestVoid.share) : 0} %) : remplis-le (hélice, virages en pente) ou resserre l'emprise`);
+    }
+    if (ride.isolated.length > ref.isolated.length)
+        out.push(`éléments isolés ${ride.isolated.length} contre ${ref.isolated.length} : ${ride.isolated.map((i) => `${ride.elements[i].kind} (${ride.elements[i].from}-${ride.elements[i].to})`).join(", ")}`);
+    return out;
+}

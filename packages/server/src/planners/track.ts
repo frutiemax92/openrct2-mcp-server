@@ -330,6 +330,11 @@ export class Occupancy {
         }
     }
 
+    /** Une pièce du circuit occupe-t-elle déjà la tuile (à n'importe quelle hauteur) ? */
+    covers(x: number, y: number): boolean {
+        return this.cells.has(`${x},${y}`);
+    }
+
     /** Premier bloc en conflit, ou null. */
     conflict(elements: TrackBlock[]): TrackBlock | null {
         for (const e of elements) {
@@ -338,6 +343,27 @@ export class Occupancy {
         }
         return null;
     }
+}
+
+/**
+ * Rectangle permis pour la piste (tuiles, bornes incluses) et, en option, niveaux absolus min et max des blocs
+ * (COASTER_SPACE.md 4.2) : sert à garder un circuit dans l'emprise de sa référence.
+ */
+export interface TrackBounds {
+    x1: number;
+    y1: number;
+    x2: number;
+    y2: number;
+    minLevel?: number;
+    maxLevel?: number;
+}
+
+/** Raison pour laquelle un bloc sort de `bounds`, ou null. */
+export function boundsProblem(b: TrackBounds, e: { x: number; y: number; z: number }): string | null {
+    if (e.x < b.x1 || e.x > b.x2 || e.y < b.y1 || e.y > b.y2) return `hors de bounds (${b.x1},${b.y1})-(${b.x2},${b.y2})`;
+    if (b.minLevel !== undefined && e.z < b.minLevel * 16) return `sous bounds.minLevel ${b.minLevel}`;
+    if (b.maxLevel !== undefined && e.z > b.maxLevel * 16) return `au-dessus de bounds.maxLevel ${b.maxLevel}`;
+    return null;
 }
 
 export type TileGetter = (x: number, y: number) => RegionTile | undefined;
@@ -822,6 +848,78 @@ export interface LayoutStats {
     maxLevel: number;
     liftPieces?: number;
     inversions: number;
+    /** Sections de bloc et nombre de trains permis (`blockSections`). */
+    blocks: BlockSections;
+}
+
+/** Fins de lift reconnues par le jeu comme fin de section (TrackPlaceAction.cpp : avec drapeau chaîne). */
+const LIFT_TOP_TYPES: ReadonlySet<number> = new Set(
+    ["up25ToFlat", "up60ToFlat", "diagUp25ToFlat", "diagUp60ToFlat"].map((n) => (TRACK_ELEM_TYPES as Record<string, number>)[n]),
+);
+const BLOCK_BRAKE_TYPES: ReadonlySet<number> = new Set(["blockBrakes", "diagBlockBrakes"].map((n) => (TRACK_ELEM_TYPES as Record<string, number>)[n]));
+const CABLE_LIFT_TYPE = (TRACK_ELEM_TYPES as Record<string, number>).cableLiftHill;
+const MAX_TRAINS_PER_RIDE = 255;
+
+export interface BlockSections {
+    stations: number;
+    blockBrakes: number;
+    /** Sommets de lift (pièce up25ToFlat ou up60ToFlat avec chaîne, ou câble) : chacun ferme une section. */
+    liftTops: number;
+    /** Sections de bloc : stations + freins de bloc + sommets de lift (ride.numBlockBrakes + stations). */
+    sections: number;
+    /**
+     * Le jeu passe seul en mode à sections de bloc (continuousCircuitBlockSectioned, 34) quand un frein de bloc est posé.
+     * Sans frein de bloc, ce mode se règle à la main (ride_configure settings.mode) ; en circuit continu, un seul train.
+     */
+    autoBlockMode: boolean;
+    /** Trains permis en mode à sections de bloc : sections − 1 (Ride.cpp, maxNumTrains), au moins 1. */
+    maxTrains: number;
+    /** Limites de section dans l'ordre du circuit : « station@0, lift@18, block@71 » (indice de pièce). */
+    boundaries: string;
+}
+
+/**
+ * Sections de bloc comme le jeu les compte : TrackPlaceAction incrémente ride.numBlockBrakes pour chaque frein de
+ * bloc, chaque fin de lift (up25ToFlat, up60ToFlat avec chaîne) et chaque câble ; Ride.cpp permet alors
+ * stations + numBlockBrakes − 1 trains en mode à sections de bloc. Les bobsleighs de RCT2 (Penguin Paradise…) font
+ * tourner 3 ou 4 trains avec leurs seuls sommets de lift, en mode à sections réglé à la main.
+ */
+export function blockSections(pieces: (TrackPieceInfo & { chain?: boolean })[]): BlockSections {
+    let stations = 0;
+    let blockBrakes = 0;
+    let liftTops = 0;
+    const marks: string[] = [];
+    pieces.forEach((p, i) => {
+        if (STATION_TYPES.has(p.type)) {
+            // Une station = une suite de pièces de station (la première pièce du circuit peut suivre la dernière).
+            const prev = pieces[(i - 1 + pieces.length) % pieces.length];
+            if (!STATION_TYPES.has(prev.type)) {
+                stations++;
+                marks.push(`station@${i}`);
+            }
+        } else if (BLOCK_BRAKE_TYPES.has(p.type)) {
+            blockBrakes++;
+            marks.push(`block@${i}`);
+        } else if ((p.chain && LIFT_TOP_TYPES.has(p.type)) || p.type === CABLE_LIFT_TYPE) {
+            liftTops++;
+            marks.push(`lift@${i}`);
+        }
+    });
+    // Circuit entièrement en station : compté une fois.
+    if (stations === 0 && pieces.some((p) => STATION_TYPES.has(p.type))) {
+        stations = 1;
+        marks.unshift("station@0");
+    }
+    const sections = stations + blockBrakes + liftTops;
+    return {
+        stations,
+        blockBrakes,
+        liftTops,
+        sections,
+        autoBlockMode: blockBrakes > 0,
+        maxTrains: Math.min(Math.max(sections - 1, 1), MAX_TRAINS_PER_RIDE),
+        boundaries: marks.join(", "),
+    };
 }
 
 /** Une inversion compte une fois : la pièce qui fait passer à l'envers (ou la boucle entière). */
@@ -855,6 +953,7 @@ export function layoutStats(table: SegmentTable, pieces: (TrackPieceInfo & { cha
         maxLevel: blocks.length ? Math.max(...zs) / 16 : 0,
         liftPieces: knowsChain ? lift : undefined,
         inversions,
+        blocks: blockSections(pieces),
     };
 }
 
@@ -932,7 +1031,12 @@ export interface ClosureOptions {
     zMax?: number;
     /** Pièces interdites (refusées par le jeu lors d'une tentative précédente), clé `type@x,y,z,dir`. */
     forbidden?: Set<string>;
+    /** Rectangle (et niveaux) hors duquel aucune pièce n'est posée. */
+    bounds?: TrackBounds;
 }
+
+/** Bonus de coût d'une pièce qui passe au-dessus ou au-dessous du circuit existant (compacité, COASTER_SPACE 4.2). */
+const STACK_BONUS = 0.4;
 
 export interface ClosureResult {
     pieces: PlannedPiece[];
@@ -1069,8 +1173,11 @@ export function planClosure(
             if (end.z < zMin || end.z > zMax) continue;
             const elements = pieceElements(piece, seg);
             if (elements.some((e) => e.z < zMin - 64 || blockProblem(env, e) !== null)) continue;
+            if (opts.bounds && elements.some((e) => boundsProblem(opts.bounds!, e) !== null)) continue;
             if (occupancy.conflict(elements)) continue;
-            const g = node.g + pieceCost(seg);
+            // À coût égal, préférer les pièces qui s'empilent avec le circuit existant plutôt qu'à côté.
+            const stacks = elements.some((e) => occupancy.covers(e.x, e.y));
+            const g = node.g + Math.max(0.5, pieceCost(seg) - (stacks ? STACK_BONUS : 0));
             const ek = poseKey(end);
             if ((best.get(ek) ?? Infinity) <= g) continue;
             best.set(ek, g);

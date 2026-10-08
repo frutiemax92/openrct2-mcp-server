@@ -319,6 +319,8 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
             description:
                 "Prix (unités internes, 10 = 1,00), nom, et réglages : mode, departure (drapeaux de départ), minWaitingTime, maxWaitingTime, " +
                 "operation (durée/nombre de tours), inspectionInterval (0 = 10 min … 6 = jamais), numCircuits, liftHillSpeed, music. " +
+                "trains et carsPerTrain : nombre de trains et de voitures par train (attraction fermée d'abord ; le jeu ramène au maximum permis, " +
+                "pour une montagne russe sections de bloc − 1 : voir layout.blocks de coaster_describe). " +
                 "Exemple : { ride: 3, price: 15, settings: { inspectionInterval: 2 } }.",
             input: {
                 ride: z.number().int().min(0),
@@ -326,9 +328,11 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
                 secondaryPrice: z.number().int().min(0).max(2000).optional(),
                 name: z.string().min(1).max(64).optional(),
                 settings: z.record(z.enum(Object.keys(RIDE_SETTINGS) as [string, ...string[]]), z.number().int().min(0).max(255)).optional(),
+                trains: z.number().int().min(1).max(255).optional(),
+                carsPerTrain: z.number().int().min(1).max(255).optional(),
             },
         },
-        async ({ ride, price, secondaryPrice, name, settings }) => {
+        async ({ ride, price, secondaryPrice, name, settings, trains, carsPerTrain }) => {
             const done: string[] = [];
             const warnings: string[] = [];
             if (price !== undefined) {
@@ -347,6 +351,19 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
                 const r = await ctx.bridge.call("ride.set_setting", { ride, setting, value });
                 (r.ok ? done : warnings).push(r.ok ? `${setting}=${value}` : `${setting} : ${r.error?.message}`);
             }
+            // RideSetVehicleAction : type 0 = trains, 1 = voitures par train ; refusé si l'attraction n'est pas fermée.
+            const vehicle: [string, number, number | undefined][] = [
+                ["carsPerTrain", 1, carsPerTrain],
+                ["trains", 0, trains],
+            ];
+            for (const [label, type, value] of vehicle) {
+                if (value === undefined) continue;
+                const r = await ctx.bridge.call("batch.execute", { ops: [{ action: "ridesetvehicle", args: { ride, type, value, colour: 0 } }], dryRun: false, stopOnError: true });
+                const res = r.results[0];
+                if (res?.ok) done.push(`${label}=${value}`);
+                else warnings.push(`${label} : ${res?.error?.message ?? "refusé"}${/clos|closed/i.test(res?.error?.message ?? "") ? " (ride_set_status closed d'abord)" : ""}`);
+            }
+            if (trains !== undefined) warnings.push("Le jeu ramène trains au maximum permis sans erreur : vérifie avec get_ride une fois l'attraction rouverte (vehicles).");
             return result({ budget: BUDGET.write, response: { summary: `Attraction ${ride} : ${done.length} réglage(s) appliqué(s).`, applied: done, warnings } });
         },
     );

@@ -1,8 +1,8 @@
 import { existsSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
-import { freeVolume, largestEmptyRect, spaceElements, spaceProfile } from "../src/planners/space.js";
+import { freeVolume, largestEmptyRect, spaceElements, spaceLevers, spaceProfile, spaceView, suggestedBounds } from "../src/planners/space.js";
 import { designLayout, parseTrackDesign } from "../src/planners/td6.js";
-import { SegmentTable, compileMacros, rideClearance, rideTrackInfo, type TrackPose } from "../src/planners/track.js";
+import { Occupancy, SegmentTable, boundsProblem, compileMacros, planClosure, rideClearance, rideTrackInfo, searchCatalog, type TrackEnv, type TrackPose } from "../src/planners/track.js";
 
 const table = SegmentTable.fromFile() as SegmentTable;
 const twister = rideTrackInfo(51)!;
@@ -133,5 +133,53 @@ describe("espace : volume libre", () => {
             [18, 30],
         ]);
         expect(v.get("7,5")).toEqual([[7, 30]]);
+    });
+});
+
+describe("espace : bounds, vue et leviers", () => {
+    it("boundsProblem refuse les blocs hors du rectangle et des niveaux", () => {
+        const b = { x1: 10, y1: 10, x2: 20, y2: 15, minLevel: 7, maxLevel: 30 };
+        expect(boundsProblem(b, { x: 10, y: 15, z: 7 * 16 })).toBeNull();
+        expect(boundsProblem(b, { x: 21, y: 12, z: 160 })).toMatch(/hors de bounds/);
+        expect(boundsProblem(b, { x: 12, y: 12, z: 6 * 16 })).toMatch(/minLevel/);
+        expect(boundsProblem(b, { x: 12, y: 12, z: 31 * 16 })).toMatch(/maxLevel/);
+    });
+
+    it("la fermeture A* reste dans bounds", () => {
+        const env: TrackEnv = { get: () => ({ h: 4, s: 0, w: 0, t: 0, o: 1 }), rideId: 0, sandbox: false, mapSize: { x: 200, y: 200 } };
+        const catalog = searchCatalog(table, twister, { steep: false, chainedClimbsOnly: true });
+        const from: TrackPose = { x: 40, y: 40, z: 160, rot: 2, slope: 0, bank: 0 };
+        const goal: TrackPose = { x: 40, y: 44, z: 160, rot: 0, slope: 0, bank: 0 };
+        const free = planClosure(catalog, from, goal, new Occupancy(rideClearance(51)), env, { zMin: 64 });
+        expect(free).not.toBeNull();
+        const bounds = { x1: 38, y1: 38, x2: 46, y2: 46 };
+        const boxed = planClosure(catalog, from, goal, new Occupancy(rideClearance(51)), env, { bounds, zMin: 64 });
+        expect(boxed).not.toBeNull();
+        for (const p of boxed!.pieces) expect(p.x >= 38 && p.x <= 46 && p.y >= 38 && p.y <= 46).toBe(true);
+        expect(planClosure(catalog, from, goal, new Occupancy(rideClearance(51)), env, { bounds: { x1: 40, y1: 40, x2: 41, y2: 44 }, maxExpansions: 5000, zMin: 64 })).toBeNull();
+    });
+
+    it.skipIf(!existsSync(FRIGHTMARE))("Frightmare : bounds conseillé, aucun levier contre elle-même, leviers contre un anneau étalé", () => {
+        const l = designLayout(parseTrackDesign(readFileSync(FRIGHTMARE), "Frightmare.TD6"), table, { x: 0, y: 0, z: 0 }, 0);
+        const ref = spaceProfile(table, l.pieces, { closed: true });
+        const sb = suggestedBounds(ref);
+        expect([sb.w, sb.h].sort((a, b) => a - b)).toEqual([19, 27]);
+        expect(spaceLevers(ref, ref)).toEqual([]);
+        expect(spaceView(ref).liftShared).toBe(11);
+        // Anneau : 4 longues droites et 4 virages, rien d'empilé.
+        const ring = compileMacros(table, twister, start, [
+            { op: "straight", length: 20 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 14 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 20 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 14 },
+            { op: "turn", dir: "right", size: "medium" },
+        ]);
+        const levers = spaceLevers(spaceProfile(table, ring.pieces, { closed: true }), ref);
+        expect(levers.some((x) => /emprise/.test(x))).toBe(true);
+        expect(levers.some((x) => /empilées/.test(x))).toBe(true);
+        expect(levers.some((x) => /vide/.test(x))).toBe(true);
     });
 });
