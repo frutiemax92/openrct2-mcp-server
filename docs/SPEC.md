@@ -860,6 +860,7 @@ Chaque macro est compilé en pièces par le planificateur ; échec = erreur stru
 - Esthétique du tracé.
 - Types exotiques (multi-lancements, pièces volantes, quarts de boucle à 90° comme ceux de Frightmare : seulement par `piece`).
 - La fermeture A* pénalise les S-bends (coût +3) sans les interdire ; une fermeture courte depuis une pose mal orientée peut encore en contenir.
+- Imiter un circuit de référence : ce qui manque encore au serveur (décomposition de la note, comparaison, vue spatiale, recherche de section sous contraintes, G prédits, dégagement réel, état fiable) est détaillé dans [COASTER_REFERENCE.md](COASTER_REFERENCE.md).
 
 Commencer par **un seul type de coaster** (acier classique à chaîne) sur terrain plat.
 
