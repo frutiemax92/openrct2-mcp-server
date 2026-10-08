@@ -24,6 +24,19 @@ Les essais successifs ont échoué pour des raisons différentes :
 
 Les trois premiers défauts sont corrigés (`coaster_describe`, macro `inversion`, modèle de vitesse, fenêtres d'entrée et de sommet). Le quatrième reste ouvert. Le serveur donne à Claude des notes finales, mais pas les leviers qui les produisent. Pour approcher la référence, Claude a dû écrire hors du serveur un simulateur et un chercheur de variantes, et lire `RideRatings.cpp` à la main.
 
+### Suite : Nightmare Frenzy retouché avec P1 et P2 (7 octobre 2026)
+
+Guidé par `coaster_compare`, sans toucher au lift ni à la première moitié du circuit :
+
+| Étape | Changement | Excitation / intensité / nausée | Écart à Frightmare |
+|---|---|---|---|
+| départ | | 6,83 / 7,34 / 3,75 | −0,57 |
+| 1 | Descente après le frein de bloc : spirale de 4 virages en pente de 3 tuiles → 2 tours d'hélice serrée empilée (4 pièces), puis un virage incliné en pente | 7,06 / 7,23 / 3,64 | −0,34 |
+| 2 | Fin de parcours : un tour d'hélice serrée (2 pièces) avant les freins, à 39-49 km/h | 7,12 / 7,26 / 3,81 | −0,28 |
+| 3 | Un deuxième tonneau à la place de la droite de 5 tuiles (5 inversions) | **7,24 / 7,53 / 3,98** | **−0,16** |
+
+Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-même : 0 → 4 compteurs), +0,09 d'hélices, +0,11 d'inversion. L'écart restant vient surtout de la vitesse moyenne (18 contre 25 mph, −0,13). Le frein de bloc à mi-parcours fait retomber le train à 22 km/h, et Frightmare n'en a pas. L'emprise reste 28×19 (1,3 fois celle de la référence). Checkpoint : `nf-724`.
+
 ## 2. Ce que le serveur donne aujourd'hui, et ce qui a manqué
 
 | Besoin | Aujourd'hui | Ce qui a manqué |
@@ -119,7 +132,7 @@ Les trois premiers défauts sont corrigés (`coaster_describe`, macro `inversion
 
 **Quoi et comment.**
 
-- Exporter la hauteur de dégagement de chaque bloc (`clearanceZ` des séquences TED) dans la table des segments, et l'utiliser dans `Occupancy` et `blockProblem`.
+- ~~Exporter la hauteur de dégagement de chaque bloc (`clearanceZ` des séquences TED) dans la table des segments, et l'utiliser dans `Occupancy` et `blockProblem`.~~ **Fait pour `Occupancy` (7 octobre 2026).** `gen-tables.mjs` génère `TRACK_BLOCK_CLEARANCE` et `TRACK_BLOCK_VERTICAL`, en contrôlant que les positions des blocs sont identiques à `data/track_segments.json` (350 pièces). Le conflit suit `TrackPlaceAction` et `MapCanConstructWithClearAt` : chaque bloc occupe [base arrondie à 8, base + clearanceZ + dégagement du véhicule[, plafonné à 24 pour les blocs verticaux, et deux blocs se gênent si leurs intervalles se chevauchent. Les quarts de tuile restent ignorés, donc le contrôle reste prudent. Effet mesuré : une hélice serrée descendante passe désormais 2 niveaux sous une droite, ce qui était refusé avec l'ancien écart fixe de 2,5 niveaux. Reste : `blockProblem` (terrain, chemins) ne connaît toujours pas le dégagement.
 - Une couche de carte « volume libre » : pour chaque tuile de l'emprise, les intervalles de niveaux libres compte tenu du circuit. Elle sert à empiler (gagner de la densité) et à trouver l'intérieur inoccupé (voir P3).
 
 ### P7. Éléments manquants dans les macros

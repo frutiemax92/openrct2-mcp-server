@@ -15,7 +15,10 @@ import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
     DIRECTION_DELTA,
+    RIDE_RATINGS,
     RIDE_TYPES,
+    TRACK_BLOCK_CLEARANCE,
+    TRACK_BLOCK_VERTICAL,
     TRACK_ELEM_TYPES,
     TRACK_GROUPS,
     rotateOffset,
@@ -166,11 +169,23 @@ export function pieceEndingAt(end: TrackPose, seg: TrackSegmentInfo): TrackPiece
     return { type: seg.type, x: x - Math.round(o.x / 32), y: y - Math.round(o.y / 32), z: end.z - seg.endZ, direction };
 }
 
+/** Bloc de piste : tuile, z monde de sa base, dégagement propre (SequenceClearance) et drapeau vertical. */
+export interface TrackBlock {
+    x: number;
+    y: number;
+    z: number;
+    /** SequenceClearance.clearanceZ du bloc (unités monde), sans la hauteur du véhicule. */
+    cz: number;
+    vertical?: boolean;
+}
+
 /** Blocs occupés (tuiles et z monde). */
-export function pieceElements(piece: TrackPieceInfo, seg: TrackSegmentInfo): { x: number; y: number; z: number }[] {
-    return seg.elements.map((e) => {
+export function pieceElements(piece: TrackPieceInfo, seg: TrackSegmentInfo): TrackBlock[] {
+    const cz = TRACK_BLOCK_CLEARANCE[seg.type];
+    const vert = TRACK_BLOCK_VERTICAL[seg.type];
+    return seg.elements.map((e, i) => {
         const o = rotateOffset(e, piece.direction);
-        return { x: piece.x + Math.round(o.x / 32), y: piece.y + Math.round(o.y / 32), z: piece.z + e.z };
+        return { x: piece.x + Math.round(o.x / 32), y: piece.y + Math.round(o.y / 32), z: piece.z + e.z, cz: cz?.[i] ?? 0, vertical: vert?.includes(i) || undefined };
     });
 }
 
@@ -274,26 +289,52 @@ export function pieceAllowed(ride: RideTrackInfo, seg: TrackSegmentInfo): boolea
 // Occupation et environnement
 // ---------------------------------------------------------------------------
 
-/** Écart vertical minimal entre deux blocs de piste sur une même tuile (unités monde). */
-export const TRACK_CLEARANCE = 40;
+/** Dégagement du véhicule d'un type d'attraction (RideHeights.clearanceHeight, défaut de RideObject.Clearance). */
+export function rideClearance(rideType: number): number {
+    return RIDE_RATINGS[rideType]?.heights?.clearanceHeight ?? DEFAULT_CLEARANCE;
+}
+/** Type inconnu : dégagement du twister et de la plupart des coasters à chaîne. */
+const DEFAULT_CLEARANCE = RIDE_RATINGS[51]?.heights?.clearanceHeight ?? 24;
 
+const floor8 = (v: number): number => Math.floor(v / 8) * 8;
+
+/** Intervalle [base, sommet[ occupé par un bloc, comme TrackPlaceAction (base et dégagement arrondis à 8). */
+export function blockSpan(b: TrackBlock, clearance: number): [number, number] {
+    const base = floor8(b.z);
+    return [base, base + floor8(b.vertical && clearance > 24 ? b.cz + 24 : b.cz + clearance)];
+}
+
+/** Deux blocs se gênent-ils (même tuile, intervalles qui se chevauchent, quarts de tuile ignorés) ? */
+export function blocksClash(a: TrackBlock, b: TrackBlock, clearance: number): boolean {
+    if (a.x !== b.x || a.y !== b.y) return false;
+    const [a0, a1] = blockSpan(a, clearance);
+    const [b0, b1] = blockSpan(b, clearance);
+    return a0 < b1 && a1 > b0;
+}
+
+/**
+ * Blocs déjà posés, par tuile. Le conflit suit MapCanConstructWithClearAt : intervalles [base, dégagement[ qui se
+ * chevauchent. Les quarts de tuile occupés sont ignorés (contrôle prudent : le jeu peut accepter un peu plus).
+ */
 export class Occupancy {
-    private readonly cells = new Map<string, number[]>();
+    private readonly cells = new Map<string, TrackBlock[]>();
 
-    add(elements: { x: number; y: number; z: number }[]): void {
+    constructor(readonly clearance: number = DEFAULT_CLEARANCE) {}
+
+    add(elements: TrackBlock[]): void {
         for (const e of elements) {
             const k = `${e.x},${e.y}`;
             const list = this.cells.get(k);
-            if (list) list.push(e.z);
-            else this.cells.set(k, [e.z]);
+            if (list) list.push(e);
+            else this.cells.set(k, [e]);
         }
     }
 
     /** Premier bloc en conflit, ou null. */
-    conflict(elements: { x: number; y: number; z: number }[]): { x: number; y: number; z: number } | null {
+    conflict(elements: TrackBlock[]): TrackBlock | null {
         for (const e of elements) {
             const list = this.cells.get(`${e.x},${e.y}`);
-            if (list && list.some((z) => Math.abs(z - e.z) < TRACK_CLEARANCE)) return e;
+            if (list && list.some((o) => blocksClash(o, e, this.clearance))) return e;
         }
         return null;
     }
@@ -835,7 +876,7 @@ interface Node {
     f: number;
     piece: TrackPieceInfo | null;
     seg: TrackSegmentInfo | null;
-    elements: { x: number; y: number; z: number }[];
+    elements: TrackBlock[];
     parent: Node | null;
     depth: number;
 }
@@ -900,10 +941,10 @@ function heuristic(p: TrackPose, goal: TrackPose): number {
     return h;
 }
 
-function selfConflict(node: Node, elements: { x: number; y: number; z: number }[]): boolean {
+function selfConflict(node: Node, elements: TrackBlock[], clearance: number): boolean {
     // Les blocs de la pièce précédente sont voisins par construction : on les saute.
     for (let n = node.parent?.parent ?? null; n; n = n.parent) {
-        for (const a of n.elements) for (const b of elements) if (a.x === b.x && a.y === b.y && Math.abs(a.z - b.z) < TRACK_CLEARANCE) return true;
+        for (const a of n.elements) for (const b of elements) if (blocksClash(a, b, clearance)) return true;
     }
     return false;
 }
@@ -939,7 +980,7 @@ export function planClosure(
         const node = heap.pop() as Node;
         const k = poseKey(node.pose);
         if ((best.get(k) ?? Infinity) < node.g) continue;
-        if (node.piece && selfConflict(node, node.elements)) continue;
+        if (node.piece && selfConflict(node, node.elements, occupancy.clearance)) continue;
         if (k === goalKey && node.piece) {
             const pieces: PlannedPiece[] = [];
             for (let n: Node | null = node; n && n.piece && n.seg; n = n.parent) {

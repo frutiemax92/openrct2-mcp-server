@@ -291,6 +291,48 @@ const ratingFlags = {
 };
 
 // ---------------------------------------------------------------------------
+// 5. Dégagement de chaque bloc de piste (COASTER_REFERENCE P6) : SequenceClearance.clearanceZ des TED
+// ---------------------------------------------------------------------------
+
+const tedFiles = [join(src, "ride", "TrackData.cpp"), ...walk(join(src, "ride", "ted")).filter((f) => f.endsWith(".h"))];
+const seqClearance = new Map();
+const tedSeqs = new Map();
+for (const f of tedFiles) {
+    const text = readFileSync(f, "utf8").replace(/\/\/[^\n]*/g, "");
+    for (const m of text.matchAll(/SequenceDescriptor\s+(k\w+)\s*=\s*\{\s*\.clearance\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,([^\n]*)/g)) {
+        // Le reste de la ligne porte les ClearanceFlags (isVertical : dégagement plafonné à 24 au-dessus du bloc).
+        seqClearance.set(m[1], { x: Number(m[2]), y: Number(m[3]), z: Number(m[4]), clearanceZ: Number(m[5]), vertical: /ClearanceFlag::isVertical/.test(m[6]) });
+    }
+    for (const m of text.matchAll(/constexpr\s+auto\s+(kTED\w+)\s*=\s*TrackElementDescriptor\s*\{/g)) {
+        const body = braced(text, text.indexOf("{", m.index + m[0].length - 1));
+        const sd = /\.sequenceData\s*=\s*\{\s*(\d+)\s*,\s*\{([^}]*)\}/.exec(body);
+        tedSeqs.set(m[1], sd ? [...sd[2].matchAll(/k\w+/g)].map((x) => x[0]).slice(0, Number(sd[1])) : []);
+    }
+}
+const trackData = readFileSync(join(src, "ride", "TrackData.cpp"), "utf8");
+const tedOrder = [...braced(trackData, trackData.indexOf("{", trackData.indexOf("kTrackElementDescriptors = std::to_array"))).matchAll(/kTED\w+/g)].map((x) => x[0]);
+const blockClearance = tedOrder.map((ted) => {
+    const seqs = tedSeqs.get(ted);
+    if (!seqs) throw new Error(`TED introuvable : ${ted}`);
+    return seqs.map((s) => {
+        const c = seqClearance.get(s);
+        if (!c) throw new Error(`Séquence introuvable : ${s} (${ted})`);
+        return c;
+    });
+});
+// Contrôle : positions des blocs identiques à celles de data/track_segments.json (exporté depuis le jeu).
+{
+    const segFile = join(root, "data", "track_segments.json");
+    const segs = JSON.parse(readFileSync(segFile, "utf8")).segments;
+    let bad = 0;
+    for (const s of segs) {
+        const b = blockClearance[s.type];
+        if (!b || b.length !== s.elements.length || b.some((c, i) => c.x !== s.elements[i].x || c.y !== s.elements[i].y || c.z !== s.elements[i].z)) bad++;
+    }
+    if (bad) throw new Error(`${bad} pièce(s) dont les blocs diffèrent de track_segments.json`);
+}
+
+// ---------------------------------------------------------------------------
 // Écriture
 // ---------------------------------------------------------------------------
 
@@ -349,6 +391,20 @@ writeFileSync(
         ";\n\n/** Rangs des énumérations de drapeaux utiles au calcul (FlagHolder : bit = 1 << rang). */\nexport const RATING_FLAGS = " +
         JSON.stringify(ratingFlags, null, 4) +
         " as const;\n",
+);
+
+writeFileSync(
+    join(genDir, "trackClearance.ts"),
+    banner +
+        "/**\n * Dégagement de chaque bloc de piste, par type de pièce (TrackElemType) puis par séquence : SequenceClearance.clearanceZ\n" +
+        " * (unités monde). Le jeu y ajoute la hauteur de dégagement du véhicule (RideObject.Clearance, par défaut\n" +
+        " * RideHeights.clearanceHeight du type), plafonnée à 24 pour les blocs verticaux (TrackPlaceAction).\n */\n" +
+        "export const TRACK_BLOCK_CLEARANCE: readonly (readonly number[])[] = " +
+        JSON.stringify(blockClearance.map((b) => b.map((c) => c.clearanceZ))) +
+        ";\n\n/** Blocs verticaux (ClearanceFlag::isVertical), par type de pièce : indices de séquence. */\n" +
+        "export const TRACK_BLOCK_VERTICAL: Readonly<Record<number, readonly number[]>> = " +
+        JSON.stringify(Object.fromEntries(blockClearance.map((b, t) => [t, b.flatMap((c, i) => (c.vertical ? [i] : []))]).filter(([, v]) => v.length))) +
+        ";\n",
 );
 
 mkdirSync(join(root, "data"), { recursive: true });

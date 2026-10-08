@@ -51,8 +51,10 @@ import {
     type Macro,
     type PlannedPiece,
     type RideTrackInfo,
+    type TrackBlock,
     type TrackEnv,
     type TrackPose,
+    rideClearance,
 } from "../planners/track.js";
 import { designDirs, designLayout, loadLibrary, type DesignEntry, type DesignLayout, type DesignPiece, type TrackDesign } from "../planners/td6.js";
 import {
@@ -246,7 +248,7 @@ async function loadCoaster(ctx: ToolContext, rideId: number): Promise<CoasterSta
         toolError("NOT_SUPPORTED_IN_MODE", `${detail.name} n'est pas une attraction à circuit.`, { hint: "Les attractions plates et boutiques se gèrent avec ride_place." });
     }
     const circuit = await ctx.bridge.call("track.circuit", { ride: rideId });
-    const occupancy = new Occupancy();
+    const occupancy = new Occupancy(rideClearance(detail.type));
     for (const p of circuit.pieces) {
         const seg = table.get(p.type);
         if (seg) occupancy.add(pieceElements(p, seg));
@@ -514,14 +516,14 @@ function checkPieces(st: CoasterState, env: TrackEnv, start: TrackPose, pieces: 
     let pose = start;
     // Les blocs de la pièce précédente ne comptent pas : deux pièces voisines peuvent partager une tuile
     // (huitièmes de virage par la diagonale), comme dans selfConflict de la fermeture.
-    let previous: { x: number; y: number; z: number }[] = [];
+    let previous: TrackBlock[] = [];
     pieces.forEach((p, i) => {
         const seg = st.table.require(p.type);
         if (!samePose(beginPose(p, seg), pose)) problems.push({ index: i, piece: p.name, tile: p, message: "discontinuité avec la pièce précédente" });
         if (!pieceAllowed(st.ride, seg)) problems.push({ index: i, piece: p.name, tile: p, message: `pièce non disponible pour ${st.ride.name}` });
         const el = pieceElements(p, seg);
         const c = occ.conflict(el);
-        if (c) problems.push({ index: i, piece: p.name, tile: c, message: "croise le circuit (moins de 5 unités de hauteur d'écart)" });
+        if (c) problems.push({ index: i, piece: p.name, tile: c, message: `croise le circuit (bloc au niveau ${c.z / 16} : les dégagements se chevauchent)` });
         for (const e of el) {
             const why = blockProblem(env, e);
             if (why) {
@@ -571,6 +573,8 @@ async function closeCircuit(
     opts: { inversions: boolean; diagonals: boolean; maxPieces: number },
 ): Promise<ClosureOutcome> {
     if (!st.stationStart) return { pieces: null, expansions: 0, attempts: 0, rejected: [] };
+    // Le plan aboutit déjà à l'entrée de la station : rien à ajouter, le circuit est fermé.
+    if (samePose(from, st.stationStart)) return { pieces: [], expansions: 0, attempts: 0, rejected: [] };
     const catalog = searchCatalog(st.table, st.ride, { inversions: opts.inversions, diagonals: opts.diagonals, steep: true, chainedClimbsOnly: true });
     const forbidden = new Set<string>();
     const rejected: ClosureOutcome["rejected"] = [];

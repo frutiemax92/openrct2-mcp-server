@@ -2,6 +2,8 @@ import type { RegionTile } from "@openrct2-claude/protocol";
 import { describe, expect, it } from "vitest";
 import {
     Occupancy,
+    blockSpan,
+    blocksClash,
     PITCH,
     SegmentTable,
     availableInversions,
@@ -217,5 +219,34 @@ describe("fermeture du circuit", () => {
         const last = res!.pieces[res!.pieces.length - 1];
         expect(poseKey(endPose(last, table.require(last.type)))).toBe(poseKey(station));
         expect(ms).toBeLessThan(5000);
+    });
+});
+
+describe("dégagement réel des blocs (TrackPlaceAction)", () => {
+    const at = (name: string, z: number) => {
+        const seg = table.byName(name)!;
+        return pieceElements({ type: seg.type, x: 10, y: 10, z, direction: 0 }, seg)[0];
+    };
+
+    it("une hélice basse passe 2 niveaux sous une droite, pas 1", () => {
+        const occ = new Occupancy(24);
+        occ.add([at("brakes", 20 * 16)]);
+        // Bloc 0 de la demi-hélice : clearanceZ 4 + 24 → sommet 24 au-dessus de sa base.
+        expect(at("rightHalfBankedHelixDownSmall", 18 * 16).cz).toBe(4);
+        expect(occ.conflict([at("rightHalfBankedHelixDownSmall", 18 * 16)])).toBeNull();
+        expect(occ.conflict([at("rightHalfBankedHelixDownSmall", 19 * 16)])).not.toBeNull();
+    });
+
+    it("une pente occupe plus de hauteur qu'une droite", () => {
+        expect(blockSpan(at("up60", 0), 24)[1]).toBeGreaterThan(blockSpan(at("flat", 0), 24)[1]);
+        expect(blockSpan(at("flat", 0), 24)).toEqual([0, 24]);
+    });
+
+    it("bloc vertical : dégagement plafonné à 24 au-dessus du bloc pour les véhicules hauts", () => {
+        const b = { x: 0, y: 0, z: 0, cz: 32, vertical: true };
+        expect(blockSpan(b, 40)).toEqual([0, 56]);
+        expect(blockSpan({ ...b, vertical: undefined }, 40)).toEqual([0, 72]);
+        expect(blocksClash(b, { ...b, z: 48 }, 40)).toBe(true);
+        expect(blocksClash(b, { ...b, z: 64 }, 40)).toBe(false);
     });
 });
