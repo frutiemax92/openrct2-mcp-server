@@ -12,6 +12,14 @@ type Piece = TrackPieceInfo & { chain?: boolean };
 export const LENGTH_MIN = 0.9;
 /** Au-delà, simple avertissement : le circuit déborde de la référence. */
 export const LENGTH_MAX = 1.2;
+/** Densité minimale d'un circuit fermé, en part de la référence (refus de fermeture en dessous). */
+export const DENSITY_MIN = 0.75;
+/** Emprise maximale d'un circuit fermé, en part de la référence (refus de fermeture au-dessus). */
+export const FOOTPRINT_MAX = 1.3;
+/** Tuiles empilées minimales, en part de la référence (refus de fermeture en dessous). */
+export const STACKED_MIN = 0.4;
+/** Dessous du lift minimal, en part de la référence, quand elle en a un (refus de fermeture en dessous). */
+export const LIFT_SHARED_MIN = 0.25;
 
 export interface ReferenceTarget {
     name: string;
@@ -56,7 +64,7 @@ export interface TargetCheck {
     view: Record<string, unknown>;
     /** Écarts à corriger (avertissements). */
     warnings: string[];
-    /** Écarts qui interdisent de fermer le circuit : longueur sous LENGTH_MIN, moins de trains. */
+    /** Écarts qui interdisent de fermer le circuit : longueur, trains, emprise, densité, empilement, dessous du lift. */
     blocking: string[];
 }
 
@@ -82,13 +90,22 @@ export function checkTarget(t: ReferenceTarget, layout: LayoutStats, space: Spac
         if (layout.lengthTiles < minLength)
             warnings.push(
                 `LONGUEUR : ${layout.lengthTiles} tuiles de piste sur ${t.lengthTiles} dans ${t.name} ; il en reste au moins ${minLength - layout.lengthTiles} à poser avant de fermer ` +
-                    "(la fermeture sera refusée en dessous). Ajoute des éléments qui s'enroulent dans l'emprise (hélices, virages en pente, passages sous le lift), pas des droites.",
+                    "(la fermeture sera refusée en dessous). Ajoute des éléments qui s'enroulent dans l'emprise (hélices, virages en pente, passages sous le lift), pas des droites. Pour la fin du circuit, coaster_search_section cherche une seconde moitié compacte dans bounds ; la poser à la main donne des circuits étalés.",
             );
         return { view, warnings, blocking };
     }
     if (layout.lengthTiles < minLength)
         blocking.push(`circuit trop court : ${layout.lengthTiles} tuiles de piste contre ${t.lengthTiles} dans ${t.name} (minimum ${minLength}, ${pct(LENGTH_MIN)} %)`);
     if (layout.blocks.maxTrains < t.maxTrains) blocking.push(`${layout.blocks.maxTrains} train(s) permis contre ${t.maxTrains} dans ${t.name} : ajoute des block_brakes`);
+    // Compacité : sans ces seuils, un circuit long mais étalé (densité 0,15 contre 0,52, 2 tuiles empilées contre 52) fermait.
+    if (space.footprint.area > t.footprintArea * FOOTPRINT_MAX)
+        blocking.push(`emprise ${space.footprint.area} tuiles contre ${t.footprintArea} dans ${t.name} (${(space.footprint.area / t.footprintArea).toFixed(2)} ×, maximum ${FOOTPRINT_MAX} ×) : refais le circuit dans suggestedBounds`);
+    if (layout.density < t.density * DENSITY_MIN)
+        blocking.push(`densité ${layout.density} contre ${t.density} dans ${t.name} (minimum ${(t.density * DENSITY_MIN).toFixed(2)})`);
+    if (space.stackedTiles < t.stackedTiles * STACKED_MIN)
+        blocking.push(`${space.stackedTiles} tuiles empilées contre ${t.stackedTiles} dans ${t.name} (minimum ${Math.ceil(t.stackedTiles * STACKED_MIN)}) : la piste doit passer au-dessus et au-dessous d'elle-même`);
+    if (t.liftShared > 0 && lift < t.liftShared * LIFT_SHARED_MIN)
+        blocking.push(`dessous du lift : ${lift} tuile(s) contre ${t.liftShared} dans ${t.name} (minimum ${Math.ceil(t.liftShared * LIFT_SHARED_MIN)}) : la seconde moitié doit passer sous le lift (coaster_search_section)`);
     if (layout.lengthTiles > t.lengthTiles * LENGTH_MAX) warnings.push(`circuit long : ${layout.lengthTiles} tuiles de piste contre ${t.lengthTiles} dans ${t.name}`);
     warnings.push(...targetLevers(targetFrom("circuit", layout, space), t));
     return { view, warnings, blocking };

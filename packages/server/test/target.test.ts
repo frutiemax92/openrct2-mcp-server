@@ -37,5 +37,9 @@ describe.skipIf(!existsSync(FRIGHTMARE))("cibles de référence", () => {
         expect(closed.blocking.some((b) => /trop court/.test(b))).toBe(true);
         expect(closed.blocking.some((b) => /train/.test(b))).toBe(true);
         expect(closed.warnings.some((w) => /densité|empilées/.test(w))).toBe(true);
+        // Compacité bloquante : un circuit étalé ne ferme plus, même assez long.
+        expect(closed.blocking.some((b) => /densité/.test(b))).toBe(true);
+        expect(closed.blocking.some((b) => /empilées/.test(b))).toBe(true);
+        expect(closed.blocking.some((b) => /dessous du lift/.test(b))).toBe(true);
     });
 });

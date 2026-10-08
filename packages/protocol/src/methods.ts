@@ -311,6 +311,8 @@ export interface RideSummary {
 
 export interface RideDetail extends RideSummary {
     mode: number;
+    /** Vitesse de la chaîne (Ride.liftHillSpeed), pour le simulateur de vitesse ; absente d'un plugin ancien. */
+    liftHillSpeed?: number;
     totalCustomers: number;
     age: number;
     runningCost: number;

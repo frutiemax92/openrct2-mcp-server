@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 // Génère les tables dérivées du code C++ d'OpenRCT2 (lecture seule) :
 //  - packages/protocol/src/generated/actionArgs.ts : clés lues par AcceptParameters, par nom d'action (SPEC F5, F6)
-//  - packages/protocol/src/generated/rideTypes.ts  : rideType -> nom, catégorie, pièce de départ (SPEC 9.4)
+//  - packages/protocol/src/generated/rideTypes.ts  : rideType -> nom, catégorie, pièce de départ (SPEC 9.4), poussée des pièces motorisées
 //  - data/ride_start_piece.json                     : même table, au format JSON
+//  - data/vehicle_subpositions.json                : sous-positions des véhicules, accélération par tangage, distances (simulateur exact)
 //
 // Usage : node tools/gen-tables.mjs [chemin du dépôt OpenRCT2]   (défaut : ..)
 
@@ -115,7 +116,22 @@ for (const f of rtdFiles) {
             const g = new RegExp(`\\.${key}\\s*=\\s*\\{([^}]*)\\}`).exec(body)?.[1] ?? "";
             return [...g.matchAll(/TrackGroup::(\w+)/g)].map((x) => x[1]);
         };
-        rtdInfo.set(m[1], { category, start, enabled: groupsOf("enabledTrackGroups"), extra: groupsOf("extraTrackGroups") });
+        // Poussée des pièces motorisées (Vehicle.TrackMotion.cpp) : poweredLift et booster remplacent l'accélération de
+        // pente des voitures par LegacyBoosterSettings << 16 ; la vitesse cible des boosters est multipliée par
+        // BoosterSpeedFactor / 2 (RideTypeDescriptor::GetUnifiedBoosterSpeed).
+        const legacy = /\.LegacyBoosterSettings\s*=\s*\{([^}]*)\}/.exec(body)?.[1].split(",").map((x) => Number(x.trim())) ?? [];
+        const lift = /\.LiftData\s*=\s*\{[^,}]*,\s*(\d+)\s*,\s*(\d+)\s*\}/.exec(body);
+        const boost = /\.BoosterSettings\s*=\s*\{([^}]*)\}/.exec(body)?.[1].split(",").map((x) => Number(x.trim())) ?? [];
+        const power = {
+            liftMinSpeed: lift ? Number(lift[1]) : 5,
+            liftMaxSpeed: lift ? Number(lift[2]) : 5,
+            launchAccelerationFactor: boost[2] ?? 12,
+            poweredLiftAcceleration: legacy[0] ?? 0,
+            boosterAcceleration: legacy[1] ?? 0,
+            boosterSpeedFactor: legacy[2] ?? 2,
+            lsmOnFlat: /RtdFlag::hasLsmBehaviourOnFlat/.test(body),
+        };
+        rtdInfo.set(m[1], { category, start, enabled: groupsOf("enabledTrackGroups"), extra: groupsOf("extraTrackGroups"), power });
     }
 }
 
@@ -148,6 +164,7 @@ for (const m of table.matchAll(/\/\*\s*RIDE_TYPE_(\w+)\s*\*\/\s*(\w+),/g)) {
         startTrackPieceName: info.start,
         trackGroups: info.enabled.map(groupValue),
         extraTrackGroups: info.extra.map(groupValue),
+        ...info.power,
     });
 }
 
@@ -352,7 +369,7 @@ writeFileSync(
 writeFileSync(
     join(genDir, "rideTypes.ts"),
     banner +
-        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n}\n\n" +
+        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */\n    poweredLiftAcceleration: number;\n    /** Poussée des boosters, sous leur vitesse cible. */\n    boosterAcceleration: number;\n    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */\n    boosterSpeedFactor: number;\n    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */\n    lsmOnFlat: boolean;\n    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */\n    liftMinSpeed: number;\n    liftMaxSpeed: number;\n    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */\n    launchAccelerationFactor: number;\n}\n\n" +
         "export const RIDE_TYPES: readonly RideTypeInfo[] = " +
         JSON.stringify(rideTypes, null, 4) +
         ";\n\n/** Valeurs de `TrackGroup` (ride/ted/TrackGroup.h). */\nexport const TRACK_GROUPS = " +
@@ -407,7 +424,74 @@ writeFileSync(
         ";\n",
 );
 
+// ---------------------------------------------------------------------------
+// 6. Mouvement des trains (SPEC 12.8, simulateur exact) : sous-positions des véhicules (VehicleSubpositionData.cpp,
+//    liste standard), accélération par tangage et distance par pas (VehicleGeometry.cpp)
+// ---------------------------------------------------------------------------
+
+const anglesH = readFileSync(join(src, "ride", "Angles.h"), "utf8");
+const pitchEnum = /enum class VehiclePitch[^{]*\{([\s\S]*?)\};/.exec(anglesH)[1];
+const pitchValue = new Map();
+{
+    let i = 0;
+    for (const line of pitchEnum.split("\n")) {
+        const m = /^\s*(\w+)\s*(?:=\s*(\d+))?\s*,/.exec(line);
+        if (m?.[1] === "pitchCount") break;
+        if (!m) continue;
+        if (m[2] !== undefined) i = Number(m[2]);
+        pitchValue.set(m[1], i++);
+    }
+}
+const geometryCpp = readFileSync(join(src, "ride", "VehicleGeometry.cpp"), "utf8");
+const intList = (name) =>
+    [.../* liste d'entiers d'un std::to_array */ new RegExp(`${name}\\s*=\\s*std::to_array[^(]*\\(\\{([\\s\\S]*?)\\}\\)`).exec(geometryCpp)[1].replace(/\/\/[^\n]*/g, "").matchAll(/-?\d+/g)].map((x) => Number(x[0]));
+const accelerationFromPitch = intList("kAccelerationFromPitch");
+const translationDistances = intList("kSubpositionTranslationDistances");
+if (accelerationFromPitch.length !== pitchValue.size) throw new Error(`kAccelerationFromPitch : ${accelerationFromPitch.length} valeurs pour ${pitchValue.size} tangages`);
+
+const subposCpp = readFileSync(join(src, "ride", "VehicleSubpositionData.cpp"), "utf8");
+const vehicleInfos = new Map();
+for (const m of subposCpp.matchAll(/CREATE_VEHICLE_INFO\((\w+),\s*\{([\s\S]*?)\}\)\n/g)) {
+    vehicleInfos.set(
+        m[1],
+        [...m[2].matchAll(/\{\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(\d+),\s*(\w+),\s*(\w+)\s*\}/g)].map((e) => {
+            const pitch = pitchValue.get(e[5]);
+            if (pitch === undefined) throw new Error(`Tangage inconnu : ${e[5]}`);
+            return [Number(e[1]), Number(e[2]), Number(e[3]), pitch];
+        }),
+    );
+}
+const defaultList = [.../TrackVehicleInfoListDefault\[\]\s*=\s*\{([\s\S]*?)\};/.exec(subposCpp)[1].matchAll(/&(\w+)/g)].map((x) => x[1]);
+// Par type de pièce (indice = TrackElemType) et par direction : pas = tangage × 8 + axes qui changent depuis la
+// sous-position précédente (bit 0 x, 1 y, 2 z ; 0 pour la première), première et dernière position (x, y, z).
+const subpositions = {};
+defaultList.forEach((name, i) => {
+    const info = vehicleInfos.get(name);
+    if (!info) throw new Error(`Sous-positions introuvables : ${name}`);
+    if (!info.length) return;
+    const type = i >> 2;
+    const dir = i & 3;
+    const steps = info.map((e, k) => {
+        const p = k ? info[k - 1] : e;
+        const mask = k ? (e[0] !== p[0] ? 1 : 0) | (e[1] !== p[1] ? 2 : 0) | (e[2] !== p[2] ? 4 : 0) : 0;
+        return e[3] * 8 + mask;
+    });
+    const t = (subpositions[type] ??= { steps: [], first: [], last: [] });
+    t.steps[dir] = steps;
+    t.first[dir] = info[0].slice(0, 3);
+    t.last[dir] = info[info.length - 1].slice(0, 3);
+});
+
 mkdirSync(join(root, "data"), { recursive: true });
+writeFileSync(
+    join(root, "data", "vehicle_subpositions.json"),
+    JSON.stringify({
+        source: "VehicleSubpositionData.cpp (TrackVehicleInfoListDefault), VehicleGeometry.cpp",
+        accelerationFromPitch,
+        translationDistances,
+        tracks: subpositions,
+    }) + "\n",
+);
 writeFileSync(join(root, "data", "ride_start_piece.json"), JSON.stringify(rideTypes, null, 2) + "\n");
 
-console.log(`${Object.keys(actionArgs).length} actions, ${rideTypes.length} types d'attractions.`);
+console.log(`${Object.keys(actionArgs).length} actions, ${rideTypes.length} types d'attractions, ${Object.keys(subpositions).length} pièces avec sous-positions.`);

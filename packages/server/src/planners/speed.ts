@@ -9,6 +9,18 @@
 // Pièces spéciales : la chaîne entraîne le train à la vitesse du lift (au moins), les freins plafonnent à leur vitesse,
 // la station repart à la vitesse de départ.
 //
+// Pièces motorisées (Vehicle::trackMotionForwards). Sur un poweredLift (et sur le plat des types hasLsmBehaviourOnFlat),
+// le jeu REMPLACE l'accélération de pente de la voiture par PoweredLiftAcceleration << 16 à chaque sous-position, puis la
+// divise par le nombre de sous-positions franchies dans le tick, qui croît avec la vitesse : c'est une puissance
+// constante. Ramené à la distance : d(v²) = launchK · accélération / v par tuile, sans terme de pente, traînée comprise.
+// Un booster fait de même avec BoosterAcceleration tant que le train est sous sa vitesse cible
+// (consigne × BoosterSpeedFactor / 2). Le jeu moyenne sur le train : seules les voitures posées sur la pièce poussent.
+// Les constantes viennent du type d'attraction (RIDE_TYPES, LegacyBoosterSettings) ; launchK est calé sur les mesures.
+//
+// Simulateur exact (vehicle.ts). Quand les sous-positions de toutes les pièces sont connues et que le modèle porte un
+// type d'attraction (SpeedModels.get), simulate() rejoue le mouvement du jeu tick par tick au lieu de ce modèle
+// d'énergie : rien à caler. Le modèle d'énergie reste le recours (pièces sans table, energyOnly) et sert au calage.
+//
 // Longueur du train (simulateTrain). Le jeu calcule l'accélération de pente de chaque voiture sur sa propre pièce, puis
 // en prend la moyenne sur le train (Vehicle::UpdateTrackMotion) : intégré sur la distance, c'est la variation de la
 // hauteur moyenne des voitures, et non de la hauteur de la tête. Un train long « s'étale » sur une crête ou un sommet
@@ -19,7 +31,9 @@
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import type { PieceSample, TrackPieceInfo, TrackSegmentInfo } from "@openrct2-claude/protocol";
-import { SegmentTable, STATION_TYPES } from "./track.js";
+import { RIDE_TYPES } from "@openrct2-claude/protocol";
+import { SegmentTable, STATION_TYPES, beginPose, endPose, samePose } from "./track.js";
+import { DISTANCE_PER_TILE, simulateExact, type ExactTrain } from "./vehicle.js";
 
 export interface SpeedModel {
     /** Gain de v² (mph²) par niveau de descente. */
@@ -39,6 +53,89 @@ export interface SpeedModel {
     samples: number;
     /** Masse totale du train de calage (unités du jeu, Car.mass) ; absente = k2 non rapporté à une masse. */
     massRef?: number;
+    /** Gain de v² (mph³) par tuile et par unité d'accélération d'une pièce motorisée, divisé par v (DEFAULT_LAUNCH_K). */
+    launchK?: number;
+    /** Poussée des pièces motorisées du type d'attraction (SpeedModels.get l'attache ; jamais enregistrée). */
+    power?: RidePower;
+    /** Type d'attraction : active le simulateur exact (SpeedModels.get l'attache ; jamais enregistré). */
+    rideType?: number;
+    /** Vitesse de chaîne de l'attraction (Ride.liftHillSpeed) ; défaut : celle du type à la création. */
+    liftHillSpeed?: number;
+    /** RideMode de l'attraction : hors circuit continu (lancement, navette), retour au modèle d'énergie. */
+    rideMode?: number;
+    /** Force le modèle d'énergie (calage, comparaison). */
+    energyOnly?: boolean;
+}
+
+/** Train par défaut du simulateur exact quand le train de l'attraction est inconnu (twister, 7 voitures). */
+export const DEFAULT_TRAIN: TrainShape = { cars: 7, carLength: 0.45, mass: 4425 };
+
+export function exactTrain(train?: TrainShape): ExactTrain {
+    const t = train && train.cars > 0 ? train : DEFAULT_TRAIN;
+    return { cars: t.cars, spacing: Math.round(t.carLength * DISTANCE_PER_TILE), mass: t.mass };
+}
+
+/** Le modèle avec la vitesse de chaîne et le mode d'une attraction donnée (ou d'un design). */
+export function forRide(model: SpeedModel, ride: { liftHillSpeed?: number; mode?: number }): SpeedModel {
+    return { ...model, liftHillSpeed: ride.liftHillSpeed || model.liftHillSpeed, rideMode: ride.mode ?? model.rideMode };
+}
+
+/** Poussée des pièces motorisées d'un type d'attraction (RideTypeDescriptor.LegacyBoosterSettings). */
+export interface RidePower {
+    poweredLift: number;
+    booster: number;
+    boosterSpeedFactor: number;
+    lsmOnFlat: boolean;
+}
+
+/**
+ * launchK par défaut : Lunar Launcher (twister, poweredLift 17) entre à 13 mph sur 7 poweredLift 25° et en sort à
+ * 39 mph. Sans pente ni traînée, ⅔ (39³ − 13³) / 7 ≈ 5400 = launchK × 17 (320) ; avec la traînée et le train entier
+ * (voitures hors de la montée), le calage sur la propulsion seule donne 450 (écart < 2 km/h sur les 7 pièces).
+ */
+export const DEFAULT_LAUNCH_K = 450;
+
+/** Sous cette vitesse (mph), le jeu franchit au moins une sous-position par tick : la poussée ne croît plus. */
+const POWER_MIN_MPH = 2;
+
+const BOOSTER_NAMES = new Set(["booster", "diagBooster"]);
+
+export function ridePower(rideType: number): RidePower | undefined {
+    const r = RIDE_TYPES.find((t) => t.rideType === rideType);
+    if (!r) return undefined;
+    return { poweredLift: r.poweredLiftAcceleration, booster: r.boosterAcceleration, boosterSpeedFactor: r.boosterSpeedFactor, lsmOnFlat: r.lsmOnFlat };
+}
+
+/**
+ * Gain de v² par tuile d'une pièce motorisée à la vitesse v (mph), ou 0 si la pièce ne pousse pas à cette vitesse
+ * (pièce ordinaire, type sans poussée, booster déjà à sa vitesse cible). Une pièce qui pousse annule la pente.
+ */
+export function powerGain(model: SpeedModel, name: string, v: number, brakeSpeed?: number): number {
+    const pw = model.power;
+    if (!pw) return 0;
+    let accel = 0;
+    if (name === "poweredLift" || (name === "flat" && pw.lsmOnFlat)) accel = pw.poweredLift;
+    else if (BOOSTER_NAMES.has(name) && v < boosterTargetMph(pw, brakeSpeed)) accel = pw.booster;
+    return accel ? ((model.launchK ?? DEFAULT_LAUNCH_K) * accel) / Math.max(v, POWER_MIN_MPH) : 0;
+}
+
+/** v² après une poussée : un booster ne pousse pas au-delà de sa vitesse cible (ni ne freine un train plus rapide). */
+function capBoost(model: SpeedModel, name: string, v2: number, vBefore: number, brakeSpeed?: number): number {
+    if (!model.power || !BOOSTER_NAMES.has(name)) return v2;
+    const t = boosterTargetMph(model.power, brakeSpeed);
+    return Math.min(v2, Math.max(t * t, vBefore * vBefore));
+}
+
+/** Vitesse cible d'un booster (mph) : consigne × BoosterSpeedFactor / 2 (GetUnifiedBoosterSpeed). */
+export function boosterTargetMph(pw: RidePower, brakeSpeed?: number): number {
+    return (brakeSpeedToMph(brakeSpeed ?? 0) * pw.boosterSpeedFactor) / 2;
+}
+
+/** Pièce qui peut pousser le train pour ce type (poweredLift, booster, plat LSM). */
+export function isPowered(model: SpeedModel, name: string): boolean {
+    const pw = model.power;
+    if (!pw) return false;
+    return (name === "poweredLift" && pw.poweredLift > 0) || (name === "flat" && pw.lsmOnFlat && pw.poweredLift > 0) || (BOOSTER_NAMES.has(name) && pw.booster > 0);
 }
 
 /** Forme d'un train : nombre de voitures, longueur d'une voiture (tuiles de piste) et masse totale (Car.mass). */
@@ -83,6 +180,10 @@ export interface PieceSpeed {
     vMin: number;
     /** La pièce ne peut pas être franchie (le train recule) : calage. */
     stall: boolean;
+    /** false : la tête du train n'atteint pas la pièce (calage avant ; simulateur exact). */
+    reached?: boolean;
+    /** Vitesses issues du simulateur exact. */
+    exact?: boolean;
 }
 
 export const mphToKmh = (v: number): number => Math.round(v * 1.609);
@@ -117,7 +218,7 @@ function heightShape(model: SpeedModel, seg: TrackSegmentInfo): (t: number) => n
 const stepsFor = (len: number): number => Math.max(2, Math.ceil(len * 2));
 
 /** Fait avancer v (mph) sur une pièce, train ponctuel ; brakeSpeed en mph pour les freins. */
-export function stepPiece(model: SpeedModel, seg: TrackSegmentInfo, name: string, vIn: number, opts: { chain?: boolean; brakeMph?: number } = {}): PieceSpeed {
+export function stepPiece(model: SpeedModel, seg: TrackSegmentInfo, name: string, vIn: number, opts: { chain?: boolean; brakeMph?: number; brakeSpeed?: number } = {}): PieceSpeed {
     if (STATION_TYPES.has(seg.type)) {
         const v = Math.max(model.stationSpeed, Math.min(vIn, model.stationSpeed));
         return { vIn, vOut: v, vMin: Math.min(vIn, v), stall: false };
@@ -133,7 +234,9 @@ export function stepPiece(model: SpeedModel, seg: TrackSegmentInfo, name: string
         const t1 = (i + 1) / n;
         const rise = h(t1) - h(t0);
         const v = Math.sqrt(Math.max(v2, 0));
-        v2 += -model.K * rise - (model.k1 * v + model.k2 * v * v) * (len / n);
+        const push = powerGain(model, name, v, opts.brakeSpeed);
+        v2 += (push ? push * (len / n) : -model.K * rise) - (model.k1 * v + model.k2 * v * v) * (len / n);
+        if (push) v2 = capBoost(model, name, v2, v, opts.brakeSpeed);
         if (opts.chain && rise > 0) v2 = Math.max(v2, model.liftSpeed * model.liftSpeed);
         if (v2 <= 0.25) {
             stall = true;
@@ -165,6 +268,21 @@ type SimPiece = TrackPieceInfo & { chain?: boolean; brakeSpeed?: number };
  * (simulateTrain) ; sinon un train ponctuel de la masse de calage.
  */
 export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiece[], vStart: number, train?: TrainShape): PieceSpeed[] {
+    if (!model.energyOnly && model.rideType !== undefined && pieces.length) {
+        const first = table.get(pieces[0].type);
+        const last = table.get(pieces[pieces.length - 1].type);
+        const closed = !!first && !!last && samePose(endPose(pieces[pieces.length - 1], last), beginPose(pieces[0], first));
+        // Circuit fermé qui ne commence pas en station : on le fait tourner pour partir de la station (départ du jeu).
+        const n = pieces.length;
+        const isStation = (i: number) => STATION_TYPES.has(pieces[((i % n) + n) % n].type);
+        const shift = closed && !isStation(0) ? pieces.findIndex((_, i) => isStation(i) && !isStation(i - 1)) : 0;
+        const run = shift > 0 ? [...pieces.slice(shift), ...pieces.slice(0, shift)] : pieces;
+        const ex = simulateExact(run, { rideType: model.rideType, train: exactTrain(train), liftHillSpeed: model.liftHillSpeed, rideMode: model.rideMode, vStartMph: vStart, closed, blockZ: (t) => table.get(t)?.elements[0]?.z ?? 0 });
+        if (ex) {
+            const out = ex.pieces.map((r) => ({ vIn: r.vIn, vOut: r.vOut, vMin: r.vMin, stall: r.stall, reached: r.reached, exact: true }));
+            return shift > 0 ? pieces.map((_, j) => out[(j - shift + n) % n]) : out;
+        }
+    }
     if (train && train.cars > 0) return simulateTrain(model, table, pieces, vStart, train);
     const out: PieceSpeed[] = [];
     let v = vStart;
@@ -174,7 +292,7 @@ export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiec
             out.push({ vIn: v, vOut: v, vMin: v, stall: false });
             continue;
         }
-        const r = stepPiece(model, seg, SegmentTable.nameOf(p.type), v, { chain: p.chain, brakeMph: p.brakeSpeed !== undefined ? brakeSpeedToMph(p.brakeSpeed) : undefined });
+        const r = stepPiece(model, seg, SegmentTable.nameOf(p.type), v, { chain: p.chain, brakeMph: p.brakeSpeed !== undefined ? brakeSpeedToMph(p.brakeSpeed) : undefined, brakeSpeed: p.brakeSpeed });
         out.push(r);
         v = r.vOut;
     }
@@ -224,6 +342,22 @@ export function simulateTrain(model: SpeedModel, table: SegmentTable, pieces: Si
     const offsets = Array.from({ length: Math.max(1, train.cars) }, (_, k) => k * train.carLength);
     const meanHeight = (s: number): number => offsets.reduce((a, d) => a + height(s - d), 0) / offsets.length;
     const onChain = (s: number): boolean => offsets.some((d) => s - d >= 0 && !!pieces[pieceAt(s - d)]?.chain);
+    const names = pieces.map((p) => SegmentTable.nameOf(p.type));
+    const anyPower = names.some((n) => isPowered(model, n));
+    // Pente moyenne et poussée moyenne du train sur [s, s + ds] : une voiture posée sur une pièce qui pousse ne
+    // compte que pour sa poussée (le jeu remplace son accélération de pente).
+    const forces = (s: number, ds: number, v: number): { rise: number; push: number } => {
+        let rise = 0;
+        let push = 0;
+        for (const d of offsets) {
+            const a = s - d;
+            const k = a >= 0 ? pieceAt(Math.min(a, total)) : -1;
+            const g = k >= 0 ? powerGain(model, names[k], v, pieces[k].brakeSpeed) : 0;
+            if (g) push += g * ds;
+            else rise += height(a + ds) - height(a);
+        }
+        return { rise: rise / offsets.length, push: push / offsets.length };
+    };
     const k2 = dragK2(model, train);
     const out: PieceSpeed[] = [];
     let v = vStart;
@@ -248,9 +382,11 @@ export function simulateTrain(model: SpeedModel, table: SegmentTable, pieces: Si
         let hPrev = meanHeight(s);
         for (let j = 0; j < n; j++) {
             const hNext = meanHeight(s + ds);
-            const rise = hNext - hPrev;
             const vv = Math.sqrt(Math.max(v2, 0));
-            v2 += -model.K * rise - (model.k1 * vv + k2 * vv * vv) * ds;
+            const f = anyPower ? forces(s, ds, vv) : { rise: hNext - hPrev, push: 0 };
+            const rise = f.rise;
+            v2 += f.push - model.K * rise - (model.k1 * vv + k2 * vv * vv) * ds;
+            if (f.push) v2 = capBoost(model, names[i], v2, vv, p.brakeSpeed);
             if (rise > 0 && onChain(s + ds / 2)) v2 = Math.max(v2, model.liftSpeed * model.liftSpeed);
             if (v2 <= 0.25) {
                 stall = true;
@@ -261,7 +397,7 @@ export function simulateTrain(model: SpeedModel, table: SegmentTable, pieces: Si
             hPrev = hNext;
         }
         let vOut = Math.sqrt(v2);
-        const name = SegmentTable.nameOf(p.type);
+        const name = names[i];
         if (BRAKE_NAMES.has(name) && p.brakeSpeed !== undefined) vOut = Math.min(vOut, brakeSpeedToMph(p.brakeSpeed));
         out.push({ vIn: v, vOut, vMin: Math.min(vMin, vOut), stall });
         v = vOut;
@@ -303,14 +439,15 @@ export function matchSamples(pieces: TrackPieceInfo[], samples: PieceSample[]): 
     });
 }
 
-/** Écart moyen (km/h) entre vitesses d'entrée simulées et mesurées, hors stations et freins. */
-export function modelError(model: SpeedModel, table: SegmentTable, measured: MeasuredPiece[], train?: TrainShape): number {
+/** Écart moyen (km/h) entre vitesses d'entrée simulées et mesurées, hors stations et freins (only : ces pièces seules). */
+export function modelError(model: SpeedModel, table: SegmentTable, measured: MeasuredPiece[], train?: TrainShape, only?: Set<number>): number {
     const sim = simulate(model, table, measured.map((m) => m.piece), model.stationSpeed, train);
     let e = 0;
     let n = 0;
     measured.forEach((m, i) => {
+        if (only && !only.has(i)) return;
         const name = SegmentTable.nameOf(m.piece.type);
-        if (!m.sample || m.sample.n < 1 || STATION_TYPES.has(m.piece.type) || BRAKE_NAMES.has(name)) return;
+        if (!m.sample || m.sample.n < 1 || STATION_TYPES.has(m.piece.type) || BRAKE_NAMES.has(name) || sim[i].reached === false) return;
         e += Math.abs(mphToKmh(sim[i].vIn) - mphToKmh(m.sample.vFirst));
         n++;
     });
@@ -324,7 +461,9 @@ export function modelError(model: SpeedModel, table: SegmentTable, measured: Mea
  * Le calage n'est gardé que s'il fait mieux que le modèle précédent sur ces mesures. Avec le train de l'essai, la
  * simulation suit le train entier et le k2 calé est rapporté à sa masse (massRef).
  */
-export function fitModel(table: SegmentTable, measured: MeasuredPiece[], prior: SpeedModel, train?: TrainShape): SpeedModel {
+export function fitModel(table: SegmentTable, measured: MeasuredPiece[], priorIn: SpeedModel, train?: TrainShape): SpeedModel {
+    // Le calage porte sur le modèle d'énergie (recours du simulateur exact).
+    const prior: SpeedModel = { ...priorIn, energyOnly: true };
     const used = measured.filter((m) => m.sample && m.sample.n > 0).length;
     if (used < 12) return prior;
     const lift = measured.filter((m) => m.piece.chain && m.sample && m.sample.n > 0).map((m) => m.sample!.vFirst);
@@ -334,6 +473,29 @@ export function fitModel(table: SegmentTable, measured: MeasuredPiece[], prior: 
     const massRef = train?.mass ?? prior.massRef;
     let best: SpeedModel = { ...prior, liftSpeed, k2: k2Here, massRef };
     let bestErr = modelError(best, table, measured, train);
+    // Pièces motorisées mesurées : launchK d'abord (sinon tout l'aval de la propulsion fausse le calage), puis à nouveau
+    // après K, k1, k2. Il est calé sur la propulsion seule (pièces motorisées et les deux suivantes) : sur tout le
+    // circuit, un lancement trop faible compenserait des pertes mal estimées ailleurs (Lunar Launcher : 190 au lieu de 450).
+    const launchSpan = new Set<number>();
+    measured.forEach((m, i) => {
+        if (isPowered(prior, SegmentTable.nameOf(m.piece.type))) for (let k = i; k <= i + 2 && k < measured.length; k++) launchSpan.add(k);
+    });
+    const powered = [...launchSpan].some((i) => measured[i].sample && measured[i].sample!.n > 0);
+    const fitLaunch = () => {
+        if (!powered) return;
+        let bestK = best.launchK ?? DEFAULT_LAUNCH_K;
+        let bestSpan = modelError(best, table, measured, train, launchSpan);
+        for (let launchK = 100; launchK <= 800; launchK += 10) {
+            const e = modelError({ ...best, launchK }, table, measured, train, launchSpan);
+            if (e < bestSpan) {
+                bestK = launchK;
+                bestSpan = e;
+            }
+        }
+        best = { ...best, launchK: bestK };
+        bestErr = modelError(best, table, measured, train);
+    };
+    fitLaunch();
     for (let K = 120; K <= 320; K += 10)
         for (const k1 of [0, 0.05, 0.1, 0.15, 0.2, 0.3, 0.5])
             for (const k2 of [0, 0.0005, 0.001, 0.0015, 0.002, 0.003, 0.005])
@@ -345,8 +507,9 @@ export function fitModel(table: SegmentTable, measured: MeasuredPiece[], prior: 
                         bestErr = e;
                     }
                 }
-    if (bestErr >= modelError(prior, table, measured, train)) return prior;
-    return { ...best, samples: prior.samples + used };
+    fitLaunch();
+    if (bestErr >= modelError(prior, table, measured, train)) return priorIn;
+    return { ...best, energyOnly: priorIn.energyOnly, samples: prior.samples + used };
 }
 
 function median(xs: number[]): number {
@@ -376,11 +539,14 @@ export class SpeedModels {
         return new SpeedModels(join(userDir, "claude-speed-model.json"));
     }
 
+    /** Modèle calé pour ce type (ou le générique), avec la poussée des pièces motorisées du type. */
     get(rideType: number): SpeedModel {
-        return this.models.get(rideType) ?? this.models.get(-1) ?? DEFAULT_MODEL;
+        const m = this.models.get(rideType) ?? this.models.get(-1) ?? DEFAULT_MODEL;
+        return { ...m, power: ridePower(rideType), rideType };
     }
 
-    set(rideType: number, m: SpeedModel): void {
+    set(rideType: number, model: SpeedModel): void {
+        const { power: _power, rideType: _rideType, liftHillSpeed: _lift, rideMode: _mode, energyOnly: _energy, ...m } = model;
         this.models.set(rideType, m);
         // -1 : modèle générique (dernier calage), pour les types encore jamais mesurés.
         this.models.set(-1, m);
@@ -448,13 +614,15 @@ export function speedWindows(
     table: SegmentTable,
     circuits: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[][],
     trains?: (TrainShape | undefined)[],
+    models?: (SpeedModel | undefined)[],
 ): Map<string, SpeedWindow> {
     const byKind = new Map<string, { vIn: number[]; vMin: number[] }>();
     for (const [c, pieces] of circuits.entries()) {
-        const sim = simulate(model, table, pieces, model.stationSpeed, trains?.[c]);
+        const m = models?.[c] ?? model;
+        const sim = simulate(m, table, pieces, m.stationSpeed, trains?.[c]);
         pieces.forEach((p, i) => {
             const kind = elementKind(SegmentTable.nameOf(p.type));
-            if (!kind || p.chain || sim[i].stall) return;
+            if (!kind || p.chain || sim[i].stall || sim[i].reached === false) return;
             const list = byKind.get(kind) ?? { vIn: [], vMin: [] };
             list.vIn.push(sim[i].vIn);
             list.vMin.push(elementMinSpeed(table, pieces, sim, i));

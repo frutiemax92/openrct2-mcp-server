@@ -110,6 +110,7 @@ export function* get(params: { id: number }): Job {
     const detail: RideDetail = {
         ...summary(ride),
         mode: ride.mode,
+        liftHillSpeed: ride.liftHillSpeed,
         totalCustomers: ride.totalCustomers,
         age: ride.age,
         runningCost: ride.runningCost,

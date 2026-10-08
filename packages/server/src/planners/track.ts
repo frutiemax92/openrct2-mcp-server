@@ -321,6 +321,13 @@ export class Occupancy {
 
     constructor(readonly clearance: number = DEFAULT_CLEARANCE) {}
 
+    /** Copie indépendante (recherche : une occupation par branche). */
+    clone(): Occupancy {
+        const o = new Occupancy(this.clearance);
+        for (const [k, list] of this.cells) o.cells.set(k, list.slice());
+        return o;
+    }
+
     add(elements: TrackBlock[]): void {
         for (const e of elements) {
             const k = `${e.x},${e.y}`;
@@ -530,6 +537,8 @@ function quarterLoopExit(exit: QuarterLoopExit, d: TurnSide): string[] {
 export type Macro =
     | { op: "straight"; length: number }
     | { op: "lift"; height: number; steep?: boolean }
+    | { op: "launch"; height: number }
+    | { op: "booster"; length: number; speed?: number }
     | { op: "climb"; height: number; steep?: boolean }
     | { op: "drop"; height: number; steep?: boolean }
     | { op: "hill"; height: number; steep?: boolean }
@@ -689,6 +698,23 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
             const run = slopeRun(table, ride, PITCH.flat, dz, { steep, chain: m.op === "lift" });
             if (!run) return `aucune suite de pièces droites ne fait ${m.op === "drop" ? "descendre" : "monter"} de ${m.height} niveau(x) exactement`;
             return [...lv, ...run.map((seg) => ({ seg, chain: m.op === "lift" && climbs(seg) }))];
+        }
+        case "launch": {
+            // Lancement motorisé (Lunar Launcher) : montée 25° de poweredLift, qui poussent le train à puissance constante
+            // (speed.ts, powerGain) au lieu de le tracter à la vitesse de la chaîne. flatToUp25 et up25ToFlat font chacun
+            // un demi-niveau, chaque poweredLift un niveau.
+            if (m.height < 2) return "launch : 2 niveaux au moins (transitions comprises)";
+            const lv = level();
+            if (typeof lv === "string") return lv;
+            const run = many(["flatToUp25", ...Array(m.height - 1).fill("poweredLift"), "up25ToFlat"]);
+            if (typeof run === "string") return `${run} : ce type n'a pas de lancement motorisé (poweredLift)`;
+            return [...lv, ...run];
+        }
+        case "booster": {
+            const lv = level();
+            if (typeof lv === "string") return lv;
+            const run = many(Array(m.length).fill("booster"), { brakeSpeed: m.speed ?? 20 });
+            return typeof run === "string" ? run : [...lv, ...run];
         }
         case "hill": {
             // Colline (camelback) : montée sur l'élan puis descente de la même hauteur, sans palier au sommet.
@@ -1033,6 +1059,8 @@ export interface ClosureOptions {
     forbidden?: Set<string>;
     /** Rectangle (et niveaux) hors duquel aucune pièce n'est posée. */
     bounds?: TrackBounds;
+    /** Montées à chaîne (défaut). false : montées sur l'élan, à vérifier par la simulation (un seul lift). */
+    chainClimbs?: boolean;
 }
 
 /** Bonus de coût d'une pièce qui passe au-dessus ou au-dessous du circuit existant (compacité, COASTER_SPACE 4.2). */
@@ -1159,7 +1187,7 @@ export function planClosure(
         if (k === goalKey && node.piece) {
             const pieces: PlannedPiece[] = [];
             for (let n: Node | null = node; n && n.piece && n.seg; n = n.parent) {
-                pieces.unshift({ ...n.piece, name: SegmentTable.nameOf(n.seg.type), chain: climbs(n.seg) || undefined });
+                pieces.unshift({ ...n.piece, name: SegmentTable.nameOf(n.seg.type), chain: (opts.chainClimbs !== false && climbs(n.seg)) || undefined });
             }
             return { pieces, expansions };
         }

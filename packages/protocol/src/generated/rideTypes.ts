@@ -9,6 +9,19 @@ export interface RideTypeInfo {
     trackGroups: number[];
     /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */
     extraTrackGroups: number[];
+    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */
+    poweredLiftAcceleration: number;
+    /** Poussée des boosters, sous leur vitesse cible. */
+    boosterAcceleration: number;
+    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */
+    boosterSpeedFactor: number;
+    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */
+    lsmOnFlat: boolean;
+    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */
+    liftMinSpeed: number;
+    liftMaxSpeed: number;
+    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */
+    launchAccelerationFactor: number;
 }
 
 export const RIDE_TYPES: readonly RideTypeInfo[] = [
@@ -49,7 +62,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "extraTrackGroups": [
             49,
             3
-        ]
+        ],
+        "liftMinSpeed": 7,
+        "liftMaxSpeed": 7,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 17,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 1,
@@ -104,7 +124,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             71,
             72,
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 2,
@@ -132,7 +159,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             88,
             89
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 3,
@@ -191,7 +225,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             71,
             72,
             10
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 7,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 38,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 4,
@@ -227,7 +268,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             29,
             88,
             89
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 16,
+        "boosterSpeedFactor": 1,
+        "lsmOnFlat": false
     },
     {
         "rideType": 5,
@@ -245,7 +293,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             17,
             87
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 6,
@@ -263,7 +318,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             17,
             87
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 7,
@@ -282,7 +344,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             17,
             87
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 8,
@@ -299,7 +368,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             17,
             13
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 9,
@@ -319,7 +395,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             14,
             15
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 10,
@@ -344,7 +427,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             26,
             27
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 11,
@@ -364,7 +454,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             68,
             9,
             56
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 12,
@@ -375,7 +472,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "trackGroups": [
             21
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 13,
@@ -398,7 +502,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             41,
             29
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 14,
@@ -409,7 +520,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "trackGroups": [
             21
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 15,
@@ -465,7 +583,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             69,
             71,
             72
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 18,
+        "boosterAcceleration": 18,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 16,
@@ -484,7 +609,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             15,
             16
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 17,
@@ -517,7 +649,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             88,
             89
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 18,
@@ -531,7 +670,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             8,
             14
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 19,
@@ -590,7 +736,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             72,
             86,
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 20,
@@ -599,7 +752,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 101,
         "startTrackPieceName": "maze",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 21,
@@ -608,7 +768,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 258,
         "startTrackPieceName": "flatTrack2x2",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 22,
@@ -635,7 +802,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             43,
             88,
             89
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 23,
@@ -653,7 +827,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             36,
             9
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 24,
@@ -671,7 +852,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             60,
             61
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 25,
@@ -680,7 +868,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 26,
@@ -689,7 +884,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 261,
         "startTrackPieceName": "flatTrack1x5",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 27,
@@ -698,7 +900,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 263,
         "startTrackPieceName": "flatTrack1x4B",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 28,
@@ -707,7 +916,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 30,
@@ -716,7 +932,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 32,
@@ -725,7 +948,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 33,
@@ -734,7 +964,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 35,
@@ -743,7 +980,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 264,
         "startTrackPieceName": "flatTrack1x1B",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 36,
@@ -752,7 +996,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 37,
@@ -761,7 +1012,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 265,
         "startTrackPieceName": "flatTrack1x4C",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 38,
@@ -770,7 +1028,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 258,
         "startTrackPieceName": "flatTrack2x2",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 39,
@@ -779,7 +1044,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 40,
@@ -788,7 +1060,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 41,
@@ -797,7 +1076,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 42,
@@ -812,7 +1098,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             39,
             29
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 40,
+        "boosterAcceleration": 40,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": true
     },
     {
         "rideType": 43,
@@ -823,7 +1116,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "trackGroups": [
             21
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 44,
@@ -887,7 +1187,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             18,
             43,
             85
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 45,
@@ -896,7 +1203,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 46,
@@ -905,7 +1219,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 47,
@@ -914,7 +1235,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 48,
@@ -923,7 +1251,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 49,
@@ -932,7 +1267,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 50,
@@ -949,7 +1291,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             28,
             48
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 51,
@@ -1012,7 +1361,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             4,
             62,
             10
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 8,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 52,
@@ -1055,7 +1411,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             49
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 7,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 53,
@@ -1079,7 +1442,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             88,
             89
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 3,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 54,
@@ -1104,7 +1474,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             67
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 55,
@@ -1143,7 +1520,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             24,
             25
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 56,
@@ -1152,7 +1536,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 57,
@@ -1205,7 +1596,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             7,
             33,
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 58,
@@ -1214,7 +1612,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 59,
@@ -1230,7 +1635,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             14,
             15
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 3,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 60,
@@ -1247,7 +1659,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             16,
             29
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 61,
@@ -1264,7 +1683,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             48
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 62,
@@ -1314,7 +1740,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             77,
             49,
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 63,
@@ -1332,7 +1765,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             17,
             87
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 64,
@@ -1341,7 +1781,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 65,
@@ -1360,7 +1807,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             28,
             38
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 3,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 66,
@@ -1379,7 +1833,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             37,
             65
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 67,
@@ -1394,7 +1855,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             14,
             66
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 68,
@@ -1455,7 +1923,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             86,
             33,
             10
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 8,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 4,
+        "lsmOnFlat": false
     },
     {
         "rideType": 69,
@@ -1466,7 +1941,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "trackGroups": [
             21
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 70,
@@ -1475,7 +1957,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 71,
@@ -1484,7 +1973,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 72,
@@ -1499,7 +1995,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             15,
             16
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 73,
@@ -1537,7 +2040,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             88,
             89
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 74,
@@ -1572,7 +2082,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 16,
+        "boosterSpeedFactor": 1,
+        "lsmOnFlat": false
     },
     {
         "rideType": 75,
@@ -1594,7 +2111,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             49
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 13,
+        "poweredLiftAcceleration": 40,
+        "boosterAcceleration": 40,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 76,
@@ -1617,7 +2141,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             28,
             41
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 77,
@@ -1626,7 +2157,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 257,
         "startTrackPieceName": "flatTrack1x4A",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 78,
@@ -1640,7 +2178,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             14,
             15
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 79,
@@ -1658,7 +2203,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             8,
             9,
             29
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 81,
@@ -1667,7 +2219,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
         "trackGroups": [],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 86,
@@ -1684,7 +2243,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             31,
             44
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 7,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 25,
+        "boosterAcceleration": 25,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 87,
@@ -1723,7 +2289,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "extraTrackGroups": [
             49,
             46
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 4,
+        "lsmOnFlat": false
     },
     {
         "rideType": 88,
@@ -1749,7 +2322,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             24,
             25
         ],
-        "extraTrackGroups": []
+        "extraTrackGroups": [],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 90,
@@ -1801,7 +2381,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 18,
+        "boosterAcceleration": 52,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 91,
@@ -1854,7 +2441,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         ],
         "extraTrackGroups": [
             49
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 11,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 15,
+        "boosterAcceleration": 52,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 92,
@@ -1913,7 +2507,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "extraTrackGroups": [
             43,
             85
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 8,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 15,
+        "boosterAcceleration": 52,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 93,
@@ -1943,7 +2544,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             22,
             26,
             24
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 94,
@@ -1982,7 +2590,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "extraTrackGroups": [
             49,
             12
-        ]
+        ],
+        "liftMinSpeed": 3,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 95,
@@ -2031,7 +2646,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             71,
             72,
             10
-        ]
+        ],
+        "liftMinSpeed": 4,
+        "liftMaxSpeed": 6,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 0,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 96,
@@ -2093,7 +2715,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             3,
             45,
             10
-        ]
+        ],
+        "liftMinSpeed": 5,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 17,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     },
     {
         "rideType": 97,
@@ -2135,7 +2764,14 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
             49,
             70,
             34
-        ]
+        ],
+        "liftMinSpeed": 3,
+        "liftMaxSpeed": 5,
+        "launchAccelerationFactor": 12,
+        "poweredLiftAcceleration": 0,
+        "boosterAcceleration": 68,
+        "boosterSpeedFactor": 2,
+        "lsmOnFlat": false
     }
 ];
 

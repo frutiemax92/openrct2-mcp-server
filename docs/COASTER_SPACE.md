@@ -108,7 +108,7 @@ En partant d'une zone libre et de la consigne « dans le style de Frightmare »,
 | 2 — **fait sauf l'image** | `space` dans `coaster_describe`, `coaster_compare` (mesures, leviers d'espace, image) | lecture en jeu des deux circuits |
 | 3 | Quarts de tuile dans le dégagement (fin de P6, collisions) | `dryRun` des croisements serrés de Frightmare |
 | 4 — **fait** | `bounds`, mesures et avertissements `ISOLÉ` dans `coaster_build_plan` et la fermeture | construction en jeu d'une section dans un rectangle imposé |
-| 5 | `coaster_search_section` (P4) avec `bounds` et objectifs d'empilement | fermeture d'une seconde moitié qui passe sous le lift |
+| 5 — **fait** | `coaster_search_section` (P4) avec `bounds` et objectifs d'empilement | fermeture d'une seconde moitié qui passe sous le lift |
 | 6 | Essai complet : critère de la section 6 | circuit construit en jeu, comparé à Frightmare |
 
 ## 7 bis. Night Terror : 3 trains, mais pas compact (8 octobre 2026)
@@ -147,6 +147,28 @@ Night Terror refait dans `bounds` 27×19 (checkpoint `night-terror-compact`) : e
 ### Reste à faire
 
 - Vérifier en jeu que des croisements refusés par le serveur (« croise le circuit » à 2,5-4 niveaux) le sont aussi par le jeu. Sinon, finir les quarts de tuile (section 4.3, étape 3) : un contrôle trop prudent écarte la piste d'elle-même et empêche la densité de la référence.
+
+## 7 quater. Compacité bloquante (8 octobre 2026)
+
+### Constat
+
+Troisième clone raté de la même façon. « Red Recluse » (style Black Widow, ride 8) a fermé avec 162 tuiles sur 169 (96 %), 31×36 = 1116 tuiles d'emprise contre 322 (3,5 ×), densité 0,15 contre 0,52, 3 tuiles empilées contre 52, 1 tuile sous le lift contre 11. Notes 6,53 / 8,12 / 4,57 contre 6,90 / 8,23 / 4,61 : les notes cachent l'écart, comme pour Night Terror (7 ter) et « Venom Weaver » (1,57 × et 2 empilées). Claude l'a pourtant présenté comme un succès.
+
+Causes côté serveur :
+
+1. La section 7 ter rendait bloquantes la longueur (90 %) et les trains seulement. Densité, empilement et dessous du lift restaient des avertissements à la fermeture : la liste « DENSITÉ / EMPILÉES / DESSOUS DU LIFT » s'affichait dans une réponse où le circuit était déjà posé. Un avertissement de plus au milieu d'une réponse de 4 000 caractères ne change pas ce que l'agent fait.
+2. Rien n'interdisait une emprise 3,5 × celle de la référence : `bounds` était facultatif et l'absence de `bounds` n'était qu'un libellé (« aucun »).
+3. `coaster_search_section` (P4) existe, mais rien ne la recommandait quand `LONGUEUR` apparaissait : le retour à la station a été routé à la main, par des hills et des virages en U sur le bord de la zone.
+
+### Fait
+
+- `planners/target.ts` : `checkTarget` rend **bloquants**, à la fermeture, quatre écarts de plus : emprise > 1,3 × la référence (`FOOTPRINT_MAX`), densité < 75 % (`DENSITY_MIN`), tuiles empilées < 40 % (`STACKED_MIN`), dessous du lift < 25 % quand la référence en a un (`LIFT_SHARED_MIN`). Avec `dryRun`, la réponse porte « REFUSÉ À LA POSE » ; sans, l'appel échoue. `allowBelowReference: true` passe outre (à n'utiliser que sur demande explicite de l'utilisateur).
+- L'avertissement `LONGUEUR` d'un circuit ouvert renvoie à `coaster_search_section` pour la fin du circuit.
+- Tests (`test/target.test.ts`) : le circuit court est refusé aussi pour densité, empilement et dessous du lift ; Frightmare lui-même reste accepté.
+
+### Consigne de construction
+
+Un clone ne se présente comme réussi que si `target` montre emprise ≤ 1,3 ×, densité ≥ 75 %, empilement ≥ 40 % et dessous du lift ≥ 25 % de la référence, en plus des notes. Les notes seules ne prouvent rien. `bounds` = `suggestedBounds` dès le premier appel, puis `coaster_search_section` pour la seconde moitié.
 
 ## 8. Verticalité (relief)
 

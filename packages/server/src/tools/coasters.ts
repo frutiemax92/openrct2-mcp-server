@@ -77,6 +77,8 @@ import {
     mphToKmh,
     simulate,
     speedWindows,
+    forRide,
+    DEFAULT_TRAIN,
     windowFor,
     type MeasuredPiece,
     type PieceSpeed,
@@ -96,7 +98,8 @@ import {
     shelterPoints,
     type RatingInputs,
 } from "../planners/ratings.js";
-import { checkTarget, referenceTarget, targetLevers, type ReferenceTarget } from "../planners/target.js";
+import { searchSection, defaultVocabulary } from "../planners/search.js";
+import { LENGTH_MAX, LENGTH_MIN, checkTarget, referenceTarget, targetLevers, type ReferenceTarget } from "../planners/target.js";
 import { circuitFingerprint, elementSequence, gSections, ratingGaps, speedProfile, topLevers, type CoasterMeasure, type StoredTerm } from "../planners/compare.js";
 import type { InverseOp } from "../state/journal.js";
 import { MeasureStore } from "../state/measures.js";
@@ -124,13 +127,14 @@ async function segmentTable(ctx: ToolContext): Promise<SegmentTable> {
 }
 
 // ---------------------------------------------------------------------------
-// Vitesse : modèle calé sur les mesures (planners/speed.ts) et fenêtres d'entrée relevées sur les designs RCT2
+// Vitesse : simulateur exact du jeu (planners/vehicle.ts), sinon modèle d'énergie calé sur les mesures (planners/speed.ts),
+// et fenêtres d'entrée relevées sur les designs RCT2
 // ---------------------------------------------------------------------------
 
 let modelsCache: SpeedModels | null = null;
 const speedModels = (ctx: ToolContext): SpeedModels => (modelsCache ??= SpeedModels.inUserDir(ctx.config.userDir));
 
-let windowsCache: { model: SpeedModel; key: string; windows: Map<string, SpeedWindow> } | null = null;
+let windowsCache: { key: string; windows: Map<string, SpeedWindow> } | null = null;
 
 /**
  * Fenêtres de vitesse d'entrée par genre d'élément, sur les circuits fermés de la bibliothèque de designs. Avec un
@@ -138,18 +142,23 @@ let windowsCache: { model: SpeedModel; key: string; windows: Map<string, SpeedWi
  * (même véhicule supposé), pour rester comparable aux vitesses simulées du circuit.
  */
 function elementWindows(ctx: ToolContext, table: SegmentTable, model: SpeedModel, train?: TrainShape): Map<string, SpeedWindow> {
-    const key = train ? `${train.carLength}/${train.mass / train.cars}` : "";
-    if (windowsCache && windowsCache.model === model && windowsCache.key === key) return windowsCache.windows;
+    // Clé par valeurs : SpeedModels.get rend un nouvel objet à chaque appel.
+    const key = [model.rideType, model.K, model.k1, model.k2, model.invExtra, model.launchK, model.massRef, train ? `${train.carLength}/${train.mass / train.cars}` : ""].join("|");
+    if (windowsCache && windowsCache.key === key) return windowsCache.windows;
     const designs = designLibrary(ctx)
         .filter((e): e is DesignEntry & { design: TrackDesign } => !!e.design && !!rideTrackInfo(e.design.rideType))
         .map((e) => ({ e, l: designLayout(e.design, table, { x: 0, y: 0, z: 0 }, 0) }))
         .filter(({ l }) => l.closed && !l.unknownPieces.length);
+    // Chaque design avec son nombre de voitures (forme et masse par voiture du train courant, sinon du train par défaut).
+    const perCar = train ?? DEFAULT_TRAIN;
     const trains = designs.map(({ e }) => {
         const cars = e.design.carsPerTrain;
-        return train && cars ? { cars, carLength: train.carLength, mass: (train.mass / train.cars) * cars } : undefined;
+        return cars ? { cars, carLength: perCar.carLength, mass: (perCar.mass / perCar.cars) * cars } : train;
     });
-    const windows = speedWindows(model, table, designs.map(({ l }) => l.pieces), trains);
-    windowsCache = { model, key, windows };
+    // Simulateur exact : chaque design avec son type (poussée des pièces motorisées) et sa vitesse de chaîne.
+    const perDesign = designs.map(({ e }) => forRide({ ...model, rideType: e.design.rideType }, { liftHillSpeed: e.design.liftHillSpeed, mode: e.design.rideMode }));
+    const windows = speedWindows(model, table, designs.map(({ l }) => l.pieces), trains, perDesign);
+    windowsCache = { key, windows };
     return windows;
 }
 
@@ -196,6 +205,13 @@ const zBounds = z
 /** Cibles de référence par circuit (coaster_build_plan reference), gardées entre les appels jusqu'à reference: null. */
 const rideTargets = new Map<number, ReferenceTarget>();
 
+/** Oublie l'état gardé pour un id d'attraction : le jeu réutilise les ids des attractions démolies. */
+function forgetRide(rideId: number): void {
+    trainCache.delete(rideId);
+    rideBounds.delete(rideId);
+    rideTargets.delete(rideId);
+}
+
 const zReference = z
     .object({ ride: z.number().int().min(0).optional(), design: z.string().min(1).max(256).optional() })
     .nullable()
@@ -203,7 +219,7 @@ const zReference = z
     .describe(
         "Circuit de référence (ride du parc ou design .td6) dont le serveur suit la longueur de piste, la densité, l'empilement, le dessous du lift " +
             "et les trains. Gardé pour les appels suivants ; null l'efface. La fermeture est refusée si le circuit fait moins de 90 % de la longueur " +
-            "de la référence ou permet moins de trains (allowBelowReference: true pour passer outre).",
+            "de la référence, permet moins de trains, dépasse 1,3 × son emprise, ou n'atteint pas 75 % de sa densité, 40 % de ses tuiles empilées et 25 % de son dessous du lift (allowBelowReference: true pour passer outre).",
     );
 
 /** Cibles d'une référence : circuit du parc (fermé) ou design .td6. */
@@ -303,9 +319,15 @@ function speedWarnings(table: SegmentTable, pieces: PlannedPiece[], sim: PieceSp
     const seen = new Set<string>();
     pieces.forEach((p, i) => {
         const where = p.macro !== undefined ? `macro ${p.macro} (${macros[p.macro]?.op ?? "?"}${(macros[p.macro] as { kind?: string })?.kind ? ` ${(macros[p.macro] as { kind?: string }).kind}` : ""})` : "fermeture";
+        if (sim[i].reached === false) return;
         if (sim[i].stall && !seen.has(`stall${p.macro}`)) {
             seen.add(`stall${p.macro}`);
-            out.push(`CALAGE probable sur ${where}, pièce ${p.name} en (${p.x},${p.y}) : entrée à ${kmh(sim[i].vIn)} km/h, pas assez d'élan. Descends avant, réduis la hauteur de l'élément, ou avance-le dans le parcours.`);
+            const unreached = sim.filter((x) => x.reached === false).length;
+            out.push(
+                sim[i].exact
+                    ? `CALAGE sur ${where}, pièce ${p.name} en (${p.x},${p.y}) : le train y arrive à ${kmh(sim[i].vIn)} km/h et recule (simulateur exact du jeu)${unreached ? ` ; ${unreached} pièce(s) après jamais atteintes` : ""}. Descends avant, réduis la hauteur de l'élément, ou avance-le dans le parcours.`
+                    : `CALAGE probable sur ${where}, pièce ${p.name} en (${p.x},${p.y}) : entrée à ${kmh(sim[i].vIn)} km/h, pas assez d'élan. Descends avant, réduis la hauteur de l'élément, ou avance-le dans le parcours.`,
+            );
             return;
         }
         const kind = elementKind(p.name);
@@ -329,10 +351,16 @@ function speedWarnings(table: SegmentTable, pieces: PlannedPiece[], sim: PieceSp
 }
 
 /** Profil de vitesse par macro : entrée, sortie, minimum (km/h), niveau de sortie. */
-function macroProfile(pieces: PlannedPiece[], sim: PieceSpeed[], macros: Macro[]): { macro: number; op: string; inKmh: number; outKmh: number; minKmh: number; endLevel: number; stall?: true }[] {
-    const out: { macro: number; op: string; inKmh: number; outKmh: number; minKmh: number; endLevel: number; stall?: true }[] = [];
+function macroProfile(pieces: PlannedPiece[], sim: PieceSpeed[], macros: Macro[]): { macro: number; op: string; inKmh: number; outKmh: number; minKmh: number; endLevel: number; stall?: true; unreached?: true }[] {
+    const out: { macro: number; op: string; inKmh: number; outKmh: number; minKmh: number; endLevel: number; stall?: true; unreached?: true }[] = [];
     pieces.forEach((p, i) => {
         if (p.macro === undefined) return;
+        if (sim[i].reached === false) {
+            // Le train cale avant : la macro n'est jamais atteinte.
+            const last = out[out.length - 1];
+            if (!last || last.macro !== p.macro) out.push({ macro: p.macro, op: (macros[p.macro] as { op: string }).op, inKmh: 0, outKmh: 0, minKmh: 0, endLevel: p.z / 16, unreached: true });
+            return;
+        }
         let row = out[out.length - 1];
         if (!row || row.macro !== p.macro) {
             const m = macros[p.macro] as { op: string; kind?: string };
@@ -377,6 +405,8 @@ interface CoasterState {
     status: string;
     /** RideMode (34 = circuit continu à sections de bloc). */
     mode: number;
+    /** Vitesse de la chaîne (Ride.liftHillSpeed) ; absente avec un plugin ancien (défaut du type). */
+    liftHillSpeed?: number;
     hasEntrance: boolean;
     hasExit: boolean;
 }
@@ -408,6 +438,7 @@ async function loadCoaster(ctx: ToolContext, rideId: number): Promise<CoasterSta
         stationStart: first ? beginPose(first, table.require(first.type)) : null,
         cursor: !circuit.closed && last ? endPose(last, table.require(last.type)) : null,
         mode: detail.mode,
+        liftHillSpeed: detail.liftHillSpeed,
         occupancy,
         status: detail.status,
         hasEntrance: !!station?.entrance,
@@ -762,6 +793,20 @@ const zMacro = z.discriminatedUnion("op", [
         height: z.number().int().min(1).max(60).describe("Niveaux gagnés, chaîne de levage."),
         steep: z.boolean().optional().describe("Chaîne raide 60° (défaut : oui si le type le permet). false = lift 25° classique, 1 niveau par tuile."),
     }),
+    z.object({
+        op: z.literal("launch"),
+        height: z
+            .number()
+            .int()
+            .min(2)
+            .max(40)
+            .describe("Lancement motorisé : montée 25° de poweredLift (height − 1 pièces), qui accélère le train (Lunar Launcher : 7 niveaux, 21 → 63 km/h)."),
+    }),
+    z.object({
+        op: z.literal("booster"),
+        length: z.number().int().min(1).max(10),
+        speed: z.number().int().min(1).max(30).optional().describe("Consigne (comme brakes) ; vitesse cible = consigne × BoosterSpeedFactor / 2, en unités de 2,25 mph. Défaut 20."),
+    }),
     z.object({ op: z.literal("climb"), height: z.number().int().min(1).max(40), steep: z.boolean().optional() }),
     z.object({ op: z.literal("drop"), height: z.number().int().min(1).max(60), steep: z.boolean().optional() }),
     z.object({
@@ -818,7 +863,7 @@ const zMacro = z.discriminatedUnion("op", [
 ]);
 
 const MACRO_DOC =
-    "Macros : straight{length} ; lift{height,steep?} (montée à chaîne droite, en niveaux) ; climb{height,steep?} (montée sans chaîne, sur l'élan) ; " +
+    "Macros : straight{length} ; lift{height,steep?} (montée à chaîne droite, en niveaux) ; launch{height} (montée motorisée poweredLift, propulse le train : remplace le lift sur les types qui l'ont, ex. twister) ; booster{length,speed?} (accélère sur le plat jusqu'à la vitesse cible) ; climb{height,steep?} (montée sans chaîne, sur l'élan) ; " +
     "drop{height,steep?} ; hill{height,steep?} (colline : monte puis redescend, freine le train et donne de l'airtime) ; turn{dir:left|right,size:small|medium|large,banked?,quarters?,slope:flat|up|down|steep_up|steep_down} ; " +
     "helix{dir,quarters,down?,size:small|large} ; inversion{kind:loop|immelmann|dive_loop|corkscrew|zero_g_roll|barrel_roll,dir,size?:small|medium|large} " +
     "(inversion complète, entrée et sortie à l'endroit ; sans size, la plus grande disponible) ; loop{dir} (petite boucle verticale) ; s_bend{dir} ; " +
@@ -1037,6 +1082,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const created = await ctx.bridge.call("ride.create", { object: obj.identifier, rideType });
             const rideId = created.rideId;
             if (rideId === null) toolError("INTERNAL", "ridecreate n'a pas renvoyé d'identifiant.");
+            forgetRide(rideId);
             const rollback = async () => {
                 await ctx.bridge.call("ride.demolish", { ride: rideId }).catch(() => undefined);
             };
@@ -1159,7 +1205,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 maxClosurePieces: z.number().int().min(4).max(120).default(80),
                 bounds: zBounds,
                 reference: zReference,
-                allowBelowReference: z.boolean().default(false).describe("Ferme même si le circuit est plus court que la référence ou permet moins de trains."),
+                allowBelowReference: z.boolean().default(false).describe("Ferme même si le circuit est trop court, trop étalé (emprise, densité), trop peu empilé ou sans passage sous le lift par rapport à la référence, ou permet moins de trains."),
                 dryRun: zDryRun,
             },
         },
@@ -1246,7 +1292,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 styleWarnings.unshift(`REFUSÉ À LA POSE : ${msg}`);
             }
             // Vitesse : depuis la station le long du circuit existant, puis le long du plan et de la fermeture.
-            const model = speedModels(ctx).get(st.rideType);
+            const model = forRide(speedModels(ctx).get(st.rideType), st);
             // Circuit existant et plan simulés d'un seul tenant : les voitures de queue sont encore sur les pièces d'avant.
             const train = await rideTrain(ctx, st.rideId);
             const whole = simulate(model, st.table, [...st.pieces, ...all], model.stationSpeed, train);
@@ -1262,7 +1308,11 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 macros: macroProfile(all, sim, args.plan as Macro[]),
                 closure: closure?.pieces?.length ? { inKmh: kmh(sim[compiled.pieces.length]?.vIn ?? 0), outKmh: kmh(sim[sim.length - 1].vOut) } : undefined,
                 model:
-                    (model.samples ? `calé sur ${model.samples} mesures` : "valeurs par défaut (lance coaster_test sur un circuit de référence pour caler)") +
+                    (sim[0]?.exact || whole[0]?.exact
+                        ? "simulateur exact du jeu (Vehicle.TrackMotion.cpp), rien à caler"
+                        : model.samples
+                          ? `modèle d'énergie calé sur ${model.samples} mesures (pièces ou mode hors du simulateur exact)`
+                          : "modèle d'énergie, valeurs par défaut (lance coaster_test sur un circuit de référence pour caler)") +
                     (train ? `, train de ${train.cars} voitures (${trainLength(train).toFixed(1)} tuiles)` : ", train ponctuel (longueur inconnue : lance coaster_test)"),
             };
             const stationZ = st.stationStart.z;
@@ -1320,6 +1370,106 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     next_hints: after.closed
                         ? [`coaster_test { ride: ${st.rideId} } pour lancer les essais et obtenir les notes.`]
                         : ["coaster_next_pieces pour voir les pièces possibles, ou coaster_build_plan { plan: [], close: true }."],
+                },
+            });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
+        "coaster_search_section",
+        {
+            title: "Chercher une fin de circuit compacte",
+            description:
+                "Recherche en faisceau (COASTER_REFERENCE P4) : essaie des milliers de suites de macros depuis le bout du circuit jusqu'à la station, " +
+                "dans bounds, et renvoie les meilleures, notées sur l'empilement (piste au-dessus ou au-dessous d'elle-même, dessous du lift), la " +
+                "couverture de l'emprise et le style (pénalités : S-bends, longues droites, éléments hors de leur fenêtre de vitesse ; refus : calage, " +
+                "second lift, moins de trains ou circuit plus court que la référence). Chaque variante donne un plan prêt pour coaster_build_plan " +
+                "(macros puis pièces de fermeture), qui la valide auprès du jeu. bounds et reference : ceux de coaster_build_plan (gardés par circuit). " +
+                "Rien n'est posé. Pour imiter une référence : bâtir le début (station, lift, première chute) avec coaster_build_plan close: false, " +
+                "puis chercher la suite ici.",
+            input: {
+                ride: z.number().int().min(0),
+                bounds: zBounds,
+                reference: zReference,
+                vocabulary: z.array(z.array(zMacro).min(1).max(4)).max(200).optional().describe("Éléments permis (suites de 1 à 4 macros) ; défaut : virages, hélices, collines, montées, descentes, freins de bloc."),
+                inversions: z.boolean().default(false).describe("Ajoute au vocabulaire par défaut les inversions disponibles pour ce type."),
+                beamWidth: z.number().int().min(4).max(200).default(40),
+                maxDepth: z.number().int().min(2).max(30).default(16),
+                timeMs: z.number().int().min(2000).max(120_000).default(45_000),
+                results: z.number().int().min(1).max(10).default(3),
+            },
+            readOnly: true,
+        },
+        async (args) => {
+            const st = await loadCoaster(ctx, args.ride);
+            if (st.closed) toolError("INVALID_PARAMS", `Le circuit de ${st.name} est fermé : coaster_undo pour retirer la fin à remplacer.`);
+            if (!st.cursor || !st.stationStart) toolError("NOT_FOUND", "Circuit vide : crée la station avec coaster_create.");
+            const bounds = args.bounds ?? (args.bounds === null ? undefined : rideBounds.get(args.ride));
+            const target = args.reference ? await loadReference(ctx, st.table, args.reference) : args.reference === null ? undefined : rideTargets.get(args.ride);
+            const env = await trackEnv(ctx, st, bounds ? [{ x: bounds.x1, y: bounds.y1 }, { x: bounds.x2, y: bounds.y2 }] : [], 24);
+            const model = forRide(speedModels(ctx).get(st.rideType), st);
+            const train = await rideTrain(ctx, st.rideId);
+            const windows = elementWindows(ctx, st.table, model, train);
+            const prefixTiles = layoutStats(st.table, st.pieces).lengthTiles;
+            const prefixSim = simulate(model, st.table, st.pieces, model.stationSpeed, train);
+            const zMin = Math.max(16, Math.min(st.stationStart.z, st.cursor.z, ...st.pieces.map((p) => p.z)) - 16 * 4);
+            const res = searchSection({
+                table: st.table,
+                ride: st.ride,
+                prefix: st.pieces,
+                start: st.cursor,
+                goal: st.stationStart,
+                occupancy: st.occupancy,
+                env,
+                bounds,
+                closureCatalog: searchCatalog(st.table, st.ride, { steep: true }),
+                speedOf: (pieces, vStart) => simulate(model, st.table, pieces, vStart, train),
+                simulateCircuit: (pieces) => simulate(model, st.table, pieces, model.stationSpeed, train),
+                judge: (pieces, sim, macros) => speedWarnings(st.table, pieces, sim, windows, macros),
+                vStart: prefixSim.length ? prefixSim[prefixSim.length - 1].vOut : model.stationSpeed,
+                minTiles: target ? Math.ceil(target.lengthTiles * LENGTH_MIN) : prefixTiles + 10,
+                maxTiles: target ? Math.floor(target.lengthTiles * LENGTH_MAX) : prefixTiles + 400,
+                minTrains: target?.maxTrains,
+                vocabulary: (args.vocabulary as Macro[][] | undefined) ?? defaultVocabulary({ inversions: args.inversions ? availableInversions(st.table, st.ride).map((s) => s.split("(")[0]) : [] }),
+                beamWidth: args.beamWidth,
+                maxDepth: args.maxDepth,
+                timeMs: args.timeMs,
+                results: args.results,
+                zMin,
+            });
+            const ref = target ? { lengthTiles: target.lengthTiles, stackedTiles: target.stackedTiles, liftShared: target.liftShared, density: target.density, coverage: Math.round(target.coverage * 100) } : undefined;
+            const variants = res.candidates.map((c, i) => ({
+                rank: i + 1,
+                score: Math.round(c.score),
+                lengthTiles: c.layout.lengthTiles,
+                footprint: c.layout.footprint.size,
+                density: c.layout.density,
+                coveragePct: Math.round(c.space.coverage * 100),
+                stackedTiles: c.space.stackedTiles,
+                liftShared: c.liftShared,
+                isolated: c.space.isolated.length,
+                maxTrains: c.layout.blocks.maxTrains,
+                minKmh: c.minKmh,
+                sBends: c.sBends,
+                warnings: c.warnings,
+                sequence: compactPieces([...c.pieces, ...c.closure]),
+                plan: [...c.macros, ...c.closure.map((p) => ({ op: "piece", name: p.name, ...(p.chain ? { chain: true } : {}) }))],
+            }));
+            return result({
+                budget: BUDGET.write * 3,
+                response: {
+                    summary: variants.length
+                        ? `${variants.length} variante(s) en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures) ; meilleure : ${variants[0].stackedTiles} tuiles empilées, ${variants[0].lengthTiles} tuiles de piste, ${variants[0].footprint}.`
+                        : `Aucune fin de circuit trouvée en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures).`,
+                    timedOut: res.timedOut,
+                    bounds: bounds ?? null,
+                    reference: ref,
+                    variants,
+                    next_hints: variants.length
+                        ? [`coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, dryRun: true } puis sans dryRun ; ensuite coaster_test et coaster_compare.`]
+                        : ["Élargis bounds, relâche la référence, augmente timeMs ou beamWidth, ou raccourcis le début (coaster_undo) pour laisser de la place."],
                 },
             });
         },
@@ -1521,7 +1671,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 "Passe le circuit en test, fait tourner le jeu en accéléré jusqu'à la fin des essais (ou maxTicks), puis renvoie le rapport : " +
                 "notes (excitation, intensité, nausée), vitesse max, G verticaux/latéraux, longueur, chutes, inversions, état (testé, accident, train calé). " +
                 "Mesure aussi la vitesse et les G du train sur chaque pièce : profile (séquence avec vitesse d'entrée en km/h et G max par groupe) et " +
-                "hotspots (pièces aux G les plus forts, pièce la plus lente), puis recale le modèle de vitesse utilisé par coaster_build_plan. " +
+                "hotspots (pièces aux G les plus forts, pièce la plus lente), et l'écart du simulateur de vitesse de coaster_build_plan à ces mesures " +
+                "(simulateur exact du jeu ; le modèle d'énergie de recours est recalé sur un essai complet). " +
                 "Pour comparer à une référence, teste-la d'abord. Exige un circuit fermé avec entrée et sortie. open: true ouvre l'attraction si le test réussit.",
             input: {
                 ride: z.number().int().min(0),
@@ -1578,9 +1729,12 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 fmtHot(slow, "vitesse min hors freins (km/h)", slow ? kmh(slow.s.vMin) : 0),
             ].filter(Boolean);
             const models = speedModels(ctx);
-            const prior = models.get(st.rideType);
+            const prior = forRide(models.get(st.rideType), st);
+            // Le simulateur exact n'a rien à caler ; le modèle d'énergie (recours) est recalé sur un essai complet.
             const fitted = tested ? fitModel(st.table, measured, prior, train) : prior;
-            const meanError = modelError(fitted, st.table, measured, train);
+            const exactError = modelError(prior, st.table, measured, train);
+            const energyError = modelError({ ...fitted, energyOnly: true }, st.table, measured, train);
+            const exactUsed = simulate(prior, st.table, st.pieces, prior.stationSpeed, train)[0]?.exact === true;
             if (fitted !== prior) models.set(st.rideType, fitted);
             let rating: RatingReport | { error: string } | undefined;
             if (tested && !(f & RIDE_FLAGS.crashed)) {
@@ -1598,8 +1752,10 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     profile: describeSequence(st.table, st.pieces, baseZ, speedsKmh),
                     hotspots,
                     speedModel: {
+                        simulator: exactUsed ? "exact (portage de Vehicle.TrackMotion.cpp)" : "modèle d'énergie (pièces sans sous-positions)",
+                        meanErrorKmh: isFinite(exactUsed ? exactError : energyError) ? Math.round((exactUsed ? exactError : energyError) * 10) / 10 : null,
+                        energyMeanErrorKmh: isFinite(energyError) ? Math.round(energyError * 10) / 10 : null,
                         samples: fitted.samples,
-                        meanErrorKmh: isFinite(meanError) ? Math.round(meanError * 10) / 10 : null,
                         updated: fitted !== prior,
                     },
                     status,
@@ -1674,7 +1830,18 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         relief: reliefView(reliefProfile(table, layout.pieces)),
                         ...spaceSection(spaceProfile(table, layout.pieces, { closed: layout.closed })),
                         target: layout.closed ? referenceTarget(entry.name, table, layout.pieces) : undefined,
-                        sequence: describeSequence(table, layout.pieces, baseZ, simulate(speedModels(ctx).get(td.rideType), table, layout.pieces, speedModels(ctx).get(td.rideType).stationSpeed).map((x) => kmh(x.vIn))),
+                        sequence: describeSequence(
+                            table,
+                            layout.pieces,
+                            baseZ,
+                            simulate(
+                                forRide(speedModels(ctx).get(td.rideType), { liftHillSpeed: td.liftHillSpeed, mode: td.rideMode }),
+                                table,
+                                layout.pieces,
+                                speedModels(ctx).get(td.rideType).stationSpeed,
+                                td.carsPerTrain ? { cars: td.carsPerTrain, carLength: DEFAULT_TRAIN.carLength, mass: (DEFAULT_TRAIN.mass / DEFAULT_TRAIN.cars) * td.carsPerTrain } : undefined,
+                            ).map((x) => kmh(x.vIn)),
+                        ),
                         inversionsAvailable: ride ? availableInversions(table, ride) : undefined,
                         next_hints: [
                             "Pour t'en inspirer : même objet de véhicule (list_objects type ride), lift droit de hauteur comparable, puis traduis la séquence en macros (inversion, turn steep_down, helix…) en plusieurs coaster_build_plan close: false ; compare layout à chaque étape.",
@@ -1718,7 +1885,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     relief: reliefView(reliefProfile(table, st.pieces)),
                     ...spaceSection(spaceProfile(table, st.pieces, { closed: st.closed })),
                     target: st.closed ? referenceTarget(st.name, table, st.pieces) : undefined,
-                    sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed, await rideTrain(ctx, st.rideId)).map((x) => kmh(x.vIn))),
+                    sequence: describeSequence(table, st.pieces, baseZ, simulate(forRide(speedModels(ctx).get(st.rideType), st), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed, await rideTrain(ctx, st.rideId)).map((x) => kmh(x.vIn))),
                     inversionsAvailable: availableInversions(table, st.ride),
                     warnings: st.closed ? blockWarnings(stats.blocks, detail.mode) : [],
                 },
@@ -2053,6 +2220,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const created = await ctx.bridge.call("ride.create", { object: obj.identifier, rideType });
             const rideId = created.rideId;
             if (rideId === null) toolError("INTERNAL", "ridecreate n'a pas renvoyé d'identifiant.");
+            forgetRide(rideId);
             let cost = created.cost;
             const placed = await runBatch(ctx, layout.pieces.map((p) => placeOp(rideId, rideType, p)), false);
             if (placed.firstFailureIndex !== null) {
