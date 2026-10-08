@@ -93,7 +93,8 @@ En partant d'une zone libre et de la consigne « dans le style de Frightmare »,
 - couverture d'au moins 40 % et au moins 50 tuiles empilées ;
 - plus grand vide d'au plus 20 % de l'emprise ;
 - au plus 2 éléments isolés, hors station et lift ;
-- en plus des critères de COASTER_REFERENCE section 4 : excitation à 0,3 près de la référence mesurée, intensité sous 8, un seul lift droit, aucun élément hors de sa fenêtre de vitesse.
+- en plus des critères de COASTER_REFERENCE section 4 : excitation à 0,3 près de la référence mesurée, intensité sous 8, un seul lift droit, aucun élément hors de sa fenêtre de vitesse ;
+- relief (section 8) : au moins la moitié des pièces à 90° de la référence, au plus 2 éléments hauts de moins qu'elle, et un point haut à 4 niveaux près du sien dans chaque cinquième du parcours après le lift.
 
 ## 7. Ordre de mise en œuvre proposé
 
@@ -105,3 +106,47 @@ En partant d'une zone libre et de la consigne « dans le style de Frightmare »,
 | 4 | `bounds`, mesures et avertissements `ISOLÉ` dans `coaster_build_plan` et la fermeture | construction en jeu d'une section dans un rectangle imposé |
 | 5 | `coaster_search_section` (P4) avec `bounds` et objectifs d'empilement | fermeture d'une seconde moitié qui passe sous le lift |
 | 6 | Essai complet : critère de la section 6 | circuit construit en jeu, comparé à Frightmare |
+
+## 8. Verticalité (relief)
+
+> Ajouté le 8 octobre 2026, à la demande de l'utilisateur, après le second essai compact de Nightmare Frenzy (7,37 / 8,06 / 4,23 sur 24×19, `nf-compact-2`).
+
+### 8.1 Constat
+
+La première inversion de Frightmare est une grande demi-boucle, puis un quart de boucle qui plonge à la verticale, un virage d'1 tuile à 90° sur cette verticale, et la ressource. Le circuit remonte aussitôt à la verticale, passe sur le dos par un quart de boucle et sort en tire-bouchon. Le circuit généré commence lui aussi par une grande boucle, mais tout ce qui suit reste entre −7 et +5 niveaux : il paraît plat.
+
+| | Frightmare | Nightmare Frenzy (`nf-compact-2`) |
+|---|---|---|
+| Pièces à 90° / à 60° | **6** / 7 | **0** / 8 |
+| Pièces qui passent ou restent à l'envers | 10 | 8 |
+| Éléments hauts (écart de hauteur ≥ 8 niveaux) | **8** | **1** |
+| Point haut par cinquième du parcours (niveaux / station) | 17 / **16 / 9** / 5 / 0 | 17 / **11 / 5** / 7 / 3 |
+| Montée totale sur l'élan, hors chaîne | 75 niveaux | 64 niveaux |
+| Hauteur moyenne au-dessus du point bas | 7,6 | 7,5 |
+
+La hauteur moyenne ne distingue pas les deux circuits. Ce qui compte : Frightmare reconvertit sa vitesse en hauteur, à la verticale et au-dessus de la station, dans les deux premiers cinquièmes.
+
+### 8.2 Pourquoi le serveur ne le voyait pas
+
+1. `coaster_describe` donnait la séquence des pièces avec leurs hauteurs, mais aucune mesure de relief. `coaster_compare` comparait notes, vitesses et G, pas les hauteurs : un circuit plat à 0,03 d'excitation de la référence passait pour réussi.
+2. Les macros ne savaient pas poser de verticale. `inversion` ne propose que des inversions complètes de pièces à 25° ou à plat. Les pièces de Frightmare (`invertedFlatToDown90QuarterLoop`, `up90ToInvertedFlatQuarterLoop`, `quarterTurn1TileDown90`…) n'étaient accessibles que par `piece`, une à une.
+3. La recherche de section (prototype hors serveur) ne notait que l'empilement, la couverture et les inversions. Elle choisissait donc des hélices et des virages au ras du sol.
+
+### 8.3 Ce qui est fait (8 octobre 2026)
+
+- **Mesure** : `reliefProfile` (`planners/space.ts`) donne les pièces à 60° et à 90°, les pièces à l'envers, la montée totale sur l'élan, la hauteur moyenne, le point haut par cinquième du parcours et l'écart de hauteur de chaque élément. `reliefLevers` rédige les écarts à la référence (« pièces verticales (90°) 0 contre 6 dans la référence : dive, quarter_loop ou vertical_drop », « 2e cinquième du parcours : point haut L11 contre L16… »). `coaster_describe` renvoie `relief`, et `coaster_compare` renvoie `relief` côte à côte et `reliefLevers`.
+- **Macros** (`planners/track.ts`) :
+  - `dive{dir, size?, height?, turn?}` : demi-boucle montante (grande par défaut), `invertedFlatToDown90QuarterLoop`, verticale descendante (`height`, 2 niveaux par `down90`), virage d'1 tuile à 90° si `turn`, `down90ToDown60` et ressource.
+  - `quarter_loop{exit, dir, height?, turn?}` : montée jusqu'à 90° (transitions automatiques), verticale (`height`, 2 par défaut), virage d'1 tuile à 90° si `turn`, `up90ToInvertedFlatQuarterLoop`, puis une sortie qui commence à l'envers : `corkscrew`, `large_corkscrew`, `half_loop`, `medium_half_loop`, `large_half_loop`, `barrel_roll`, `zero_g_roll` ou `dive` (quart de boucle vers la verticale descendante).
+  - `vertical_drop{height, turn?}` : `height` est la chute totale, entrée à 60° et ressource comprises (18 niveaux au moins depuis le plat).
+  - Vérifié : depuis la pose de Frightmare avant sa première inversion, `piece flatToUp25`, `piece up25`, `dive{right, turn: right}` et `quarter_loop{corkscrew, right}` redonnent ses 12 pièces, aux mêmes positions.
+- Tests : `test/vertical.test.ts` (reproduction de Frightmare, chaque sortie de `quarter_loop`, hauteur de `vertical_drop`, relief et leviers de Frightmare).
+
+### 8.4 Reste à faire
+
+| Étape | Contenu | Validation |
+|---|---|---|
+| V1 | Vérifier en jeu les trois macros (`dryRun` puis pose), et que le modèle de vitesse passe les sommets de quart de boucle (fenêtre `quarterLoop` relevée sur les designs RCT2) | `coaster_build_plan` sur un circuit d'essai, puis `coaster_test` |
+| V2 | Nightmare Frenzy : remplacer la grande boucle et la suite plate de la première moitié par `dive` puis `quarter_loop`, comme Frightmare, puis refaire la seconde moitié | `coaster_compare` : `reliefLevers` vides ou presque, critère de la section 6 |
+| V3 | `coaster_search_section` (étape 5) : vocabulaire avec `dive`, `quarter_loop` et `vertical_drop`, et un objectif de relief (point haut par cinquième, éléments hauts) en plus de l'empilement | fermeture d'une seconde moitié qui remonte au-dessus de la station |
+

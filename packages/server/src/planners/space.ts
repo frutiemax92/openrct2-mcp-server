@@ -4,7 +4,7 @@
 
 import type { TrackPieceInfo } from "@openrct2-claude/protocol";
 import { elementKind } from "./speed.js";
-import { SegmentTable, beginPose, blockSpan, endPose, groundTopZ, pieceElements, samePose, type TileGetter, type TrackBlock } from "./track.js";
+import { STATION_TYPES, SegmentTable, beginPose, blockSpan, endPose, groundTopZ, pieceElements, samePose, type TileGetter, type TrackBlock } from "./track.js";
 
 /** Distance de Tchebychev au-delà de laquelle `nearestGap` vaut null (« > 4 »). */
 export const GAP_LIMIT = 4;
@@ -324,5 +324,116 @@ export function freeVolume(
             if (lo < opts.maxLevel) free.push([lo, opts.maxLevel]);
             out.set(key(x, y), free.filter(([a, b]) => b > a));
         }
+    return out;
+}
+
+// ---------------------------------------------------------------------------
+// Relief : verticalité du circuit (COASTER_SPACE.md, section 8)
+// ---------------------------------------------------------------------------
+
+export interface ReliefElement {
+    kind: string;
+    from: number;
+    to: number;
+    /** Plus bas et plus haut niveau atteints (au-dessus de la station), et l'écart. */
+    low: number;
+    high: number;
+    span: number;
+}
+
+export interface ReliefProfile {
+    /** Pièces à 60° et à 90° (virages d'1 tuile compris), pièces qui passent ou restent à l'envers. */
+    steepPieces: number;
+    verticalPieces: number;
+    invertedPieces: number;
+    /** Montée totale sur l'élan, hors chaîne (niveaux) : l'énergie que le parcours rend en hauteur. */
+    climbAfterLift: number;
+    /** Hauteur moyenne au-dessus du point le plus bas du circuit (niveaux, pondérée par la longueur). */
+    meanHeight: number;
+    /** Point le plus haut de chaque cinquième du parcours (niveaux au-dessus de la station). */
+    peakByFifth: number[];
+    /** Éléments hors station, lift et freins, avec leur écart de hauteur. */
+    elements: ReliefElement[];
+}
+
+/** Relief d'un circuit (pièces dans l'ordre de marche) : verticalité, hauteur par section, écart de hauteur par élément. */
+export function reliefProfile(table: SegmentTable, pieces: Piece[]): ReliefProfile {
+    const station = pieces.find((p) => STATION_TYPES.has(p.type));
+    const z0 = station ? (station.z + table.require(station.type).beginZ) / 16 : 0;
+    let steep = 0;
+    let vertical = 0;
+    let inverted = 0;
+    let climb = 0;
+    let length = 0;
+    const rows: { s: number; len: number; begin: number; end: number; low: number; high: number }[] = [];
+    for (const p of pieces) {
+        const seg = table.get(p.type);
+        if (!seg) continue;
+        const name = SegmentTable.nameOf(p.type);
+        if (/90/.test(name)) vertical++;
+        else if (/60/.test(name)) steep++;
+        if (seg.beginBank === 15 || seg.endBank === 15) inverted++;
+        const begin = (p.z + seg.beginZ) / 16 - z0;
+        const end = (p.z + seg.endZ) / 16 - z0;
+        const zs = [seg.beginZ, seg.endZ, ...seg.elements.map((e) => e.z)].map((z) => (p.z + z) / 16 - z0);
+        const len = Math.max(seg.length, 1) / 32;
+        // Montée sur l'élan : jusqu'au point haut de la pièce (sommet d'une inversion), hors chaîne et station.
+        if (!p.chain && !STATION_TYPES.has(p.type)) climb += Math.max(0, Math.max(...zs) - begin);
+        rows.push({ s: length, len, begin, end, low: Math.min(...zs), high: Math.max(...zs) });
+        length += len;
+    }
+    const lowest = rows.length ? Math.min(...rows.map((r) => r.low)) : 0;
+    const meanHeight = length ? rows.reduce((a, r) => a + r.len * ((r.begin + r.end) / 2 - lowest), 0) / length : 0;
+    const peakByFifth = [0, 1, 2, 3, 4].map((f) => {
+        const inFifth = rows.filter((r) => r.s >= (f * length) / 5 && r.s < ((f + 1) * length) / 5);
+        return inFifth.length ? Math.max(...inFifth.map((r) => r.high)) : 0;
+    });
+    const indexOf = new Map<number, number>();
+    let k = 0;
+    pieces.forEach((p, i) => {
+        if (table.get(p.type)) indexOf.set(i, k++);
+    });
+    const elements = spaceElements(pieces)
+        .filter((e) => e.kind !== "station" && e.kind !== "lift" && e.kind !== "brakes")
+        .map((e) => {
+            const rs = rows.slice(indexOf.get(e.from) ?? 0, (indexOf.get(e.to) ?? 0) + 1);
+            const low = Math.min(...rs.map((r) => r.low));
+            const high = Math.max(...rs.map((r) => r.high));
+            return { ...e, low, high, span: high - low };
+        });
+    return { steepPieces: steep, verticalPieces: vertical, invertedPieces: inverted, climbAfterLift: climb, meanHeight, peakByFifth, elements };
+}
+
+/** Écart de hauteur à partir duquel un élément compte comme « haut » (grande demi-boucle, quart de boucle, montée verticale). */
+export const TALL_SPAN = 8;
+
+/** Vue compacte du relief pour les réponses des outils (1 ligne par élément haut). */
+export function reliefView(r: ReliefProfile): Record<string, unknown> {
+    return {
+        steepPieces: r.steepPieces,
+        verticalPieces: r.verticalPieces,
+        invertedPieces: r.invertedPieces,
+        climbAfterLift: r.climbAfterLift,
+        meanHeight: Math.round(r.meanHeight * 10) / 10,
+        peakByFifth: r.peakByFifth,
+        tallElements: r.elements.filter((e) => e.span >= TALL_SPAN).map((e) => `${e.kind} (pièces ${e.from}-${e.to}) L${e.low}→${e.high}`),
+    };
+}
+
+/**
+ * Leviers de relief : ce qui rend le circuit plus plat que la référence, rédigé comme les leviers de note. Rien si le
+ * circuit est aussi vertical qu'elle.
+ */
+export function reliefLevers(ride: ReliefProfile, ref: ReliefProfile): string[] {
+    const out: string[] = [];
+    const tall = (r: ReliefProfile) => r.elements.filter((e) => e.span >= TALL_SPAN);
+    if (ref.verticalPieces > ride.verticalPieces)
+        out.push(`pièces verticales (90°) ${ride.verticalPieces} contre ${ref.verticalPieces} dans la référence : dive, quarter_loop ou vertical_drop`);
+    if (tall(ref).length > tall(ride).length)
+        out.push(`éléments hauts (≥ ${TALL_SPAN} niveaux) ${tall(ride).length} contre ${tall(ref).length} : ${tall(ref).map((e) => `${e.kind} L${e.low}→${e.high}`).join(", ")}`);
+    ref.peakByFifth.forEach((h, f) => {
+        if (h - ride.peakByFifth[f] >= 4) out.push(`${f + 1}e cinquième du parcours : point haut L${ride.peakByFifth[f]} contre L${h} ; remonte plus haut sur l'élan (quart de boucle, demi-boucle, montée raide)`);
+    });
+    if (ref.climbAfterLift - ride.climbAfterLift >= 8) out.push(`montée totale sur l'élan ${ride.climbAfterLift} niveaux contre ${ref.climbAfterLift}`);
     return out;
 }

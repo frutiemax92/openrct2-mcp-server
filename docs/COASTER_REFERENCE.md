@@ -144,6 +144,8 @@ Ce que l'empilement a rapporté : +0,14 de proximité (piste au-dessus d'elle-m�
 
 **Quoi.** Macros `vertical_drop{height}`, `quarter_loop{dir}` (montée verticale vers l'envers, puis sortie en tire-bouchon ou en demi-boucle), `dive{dir}` (demi-boucle vers la chute verticale), `swoop{dir, quarters}` (huitièmes inclinés enchaînés au ras du sol), `helix` montante (existe, à documenter), et `turn size:'large'` en pente.
 
+> **Fait en partie (8 octobre 2026).** `dive`, `quarter_loop` et `vertical_drop` sont implémentés et redonnent la première inversion de Frightmare pièce pour pièce. Le relief qui manquait au circuit généré est mesuré par `reliefProfile` (COASTER_SPACE.md, section 8). Restent `swoop` et le grand virage en pente.
+
 ### P8. Fiabilité de l'état entre les appels
 
 **Pourquoi.** Pendant les essais, le parc a été rechargé deux fois depuis une ancienne sauvegarde, sans que le serveur le signale. Claude a retiré 66 puis 40 pièces d'un circuit qui n'était plus celui qu'il croyait. Autre cas : un serveur MCP pas encore redémarré, donc avec l'ancien code, a écrasé deux fois le calage du modèle de vitesse.

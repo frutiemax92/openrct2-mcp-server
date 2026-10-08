@@ -475,6 +475,32 @@ export type TurnSide = "left" | "right";
 export type InversionKind = "loop" | "immelmann" | "dive_loop" | "corkscrew" | "zero_g_roll" | "barrel_roll";
 export const INVERSION_KINDS: readonly InversionKind[] = ["loop", "immelmann", "dive_loop", "corkscrew", "zero_g_roll", "barrel_roll"];
 
+/** Sorties d'un quart de boucle (piste à l'envers, à plat) vers l'endroit. */
+export type QuarterLoopExit = "corkscrew" | "large_corkscrew" | "half_loop" | "medium_half_loop" | "large_half_loop" | "barrel_roll" | "zero_g_roll" | "dive";
+export const QUARTER_LOOP_EXITS: readonly QuarterLoopExit[] = ["corkscrew", "large_corkscrew", "half_loop", "medium_half_loop", "large_half_loop", "barrel_roll", "zero_g_roll", "dive"];
+
+/** Première pièce de chaque sortie : elle commence à l'envers, à plat (bank 15), comme up90ToInvertedFlatQuarterLoop finit. */
+function quarterLoopExit(exit: QuarterLoopExit, d: TurnSide): string[] {
+    switch (exit) {
+        case "corkscrew":
+            return [`${d}CorkscrewDown`];
+        case "large_corkscrew":
+            return [`${d}LargeCorkscrewDown`];
+        case "half_loop":
+            return ["halfLoopDown"];
+        case "medium_half_loop":
+            return [`${d}MediumHalfLoopDown`];
+        case "large_half_loop":
+            return [`${d}LargeHalfLoopDown`];
+        case "barrel_roll":
+            return [`${d}BarrelRollDownToUp`];
+        case "zero_g_roll":
+            return [`${d}ZeroGRollDown`];
+        case "dive":
+            return ["invertedFlatToDown90QuarterLoop", "down90ToDown60"];
+    }
+}
+
 export type Macro =
     | { op: "straight"; length: number }
     | { op: "lift"; height: number; steep?: boolean }
@@ -493,6 +519,9 @@ export type Macro =
     | { op: "s_bend"; dir: TurnSide }
     | { op: "loop"; dir: TurnSide }
     | { op: "inversion"; kind: InversionKind; dir: TurnSide; size?: "small" | "medium" | "large" }
+    | { op: "vertical_drop"; height: number; turn?: TurnSide }
+    | { op: "quarter_loop"; exit: QuarterLoopExit; dir: TurnSide; height?: number; turn?: TurnSide }
+    | { op: "dive"; dir: TurnSide; size?: "small" | "medium" | "large"; height?: number; turn?: TurnSide }
     | { op: "brakes"; length: number; speed?: number }
     | { op: "block_brakes" }
     | { op: "photo" }
@@ -663,6 +692,48 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
             }
             const avail = availableInversions(table, ride);
             return `inversion ${m.kind}${m.size ? ` ${m.size}` : ""} indisponible pour ${ride.name} (possibles : ${avail.length ? avail.join(", ") : "aucune"})`;
+        }
+        case "vertical_drop":
+        case "dive":
+        case "quarter_loop": {
+            // Éléments verticaux (COASTER_REFERENCE P7, verticalité de Frightmare). La partie verticale compte
+            // round(height / 2) pièces down90/up90 (2 niveaux chacune) ; turn ajoute un virage d'1 tuile à 90° (6 niveaux).
+            const vertical = (dir: "Up" | "Down", height: number | undefined, fallback: number): string[] => [
+                ...Array(Math.max(0, Math.round((height ?? fallback * 2) / 2))).fill(dir === "Up" ? "up90" : "down90"),
+                ...(m.turn ? [`${m.turn}QuarterTurn1Tile${dir}90`] : []),
+            ];
+            let names: string[];
+            if (m.op === "vertical_drop") {
+                // height = chute totale : entrée jusqu'à 60° (transitions), 60 → 90 (3,5 niveaux), verticale, virage
+                // éventuel (6), 90 → 60 (3,5), ressource jusqu'à plat. La verticale prend ce qui reste, par pièces de 2.
+                const dzOf = (segs: TrackSegmentInfo[] | null) => (segs ? segs.reduce((a, g) => a + (g.beginZ - g.endZ) / 16, 0) : NaN);
+                const entry = dzOf(findTransition(table, ride, pose, { slope: PITCH.down60, bank: ROLL.none }));
+                const exit = dzOf(findTransition(table, ride, { ...pose, slope: PITCH.down60, bank: ROLL.none }, { slope: PITCH.flat, bank: ROLL.none }));
+                if (Number.isNaN(entry) || Number.isNaN(exit)) return "chute verticale impossible depuis l'état courant";
+                const fixed = entry + 7 + (m.turn ? 6 : 0) + exit;
+                if (m.height < fixed) return `vertical_drop : ${Math.ceil(fixed)} niveaux au moins depuis cet état (entrée, passage à 90°, ressource${m.turn ? ", virage" : ""})`;
+                names = ["down60ToDown90", ...vertical("Down", m.height - fixed, 0), "down90ToDown60"];
+            } else if (m.op === "dive") {
+                // Demi-boucle vers le haut, quart de boucle vers la verticale descendante (Frightmare : grande demi-boucle droite,
+                // invertedFlatToDown90QuarterLoop, virage d'1 tuile à 90°, puis 90 → 60 et ressource).
+                const size = m.size ?? "large";
+                const up = size === "small" ? "halfLoopUp" : `${m.dir}${size === "large" ? "Large" : "Medium"}HalfLoopUp`;
+                names = [up, "invertedFlatToDown90QuarterLoop", ...vertical("Down", m.height, 0), "down90ToDown60"];
+            } else {
+                // Montée verticale puis quart de boucle sur le dos, sortie à l'endroit (Frightmare : up60ToUp90, up90,
+                // up90ToInvertedFlatQuarterLoop, tire-bouchon descendant).
+                names = ["up60ToUp90", ...vertical("Up", m.height, 1), "up90ToInvertedFlatQuarterLoop", ...quarterLoopExit(m.exit, m.dir)];
+            }
+            const segs = many(names);
+            if (typeof segs === "string") return segs;
+            // Ressource : retour à plat après une sortie qui descend (60° ou 25°), comme down60ToFlatLongBase dans Frightmare.
+            const last = segs[segs.length - 1].seg;
+            if (last.endSlope !== PITCH.flat || last.endBank !== ROLL.none) {
+                const t = findTransition(table, ride, { ...pose, slope: last.endSlope, bank: last.endBank }, { slope: PITCH.flat, bank: ROLL.none });
+                if (!t) return `impossible de revenir à plat après ${SegmentTable.nameOf(last.type)}`;
+                segs.push(...t.map((seg) => ({ seg })));
+            }
+            return segs;
         }
         case "helix": {
             const d = m.dir === "left" ? "left" : "right";

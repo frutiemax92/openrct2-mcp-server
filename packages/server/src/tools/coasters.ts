@@ -30,6 +30,7 @@ import {
     beginPose,
     blockProblem,
     INVERSION_KINDS,
+    QUARTER_LOOP_EXITS,
     availableInversions,
     compileMacros,
     describePose,
@@ -56,6 +57,7 @@ import {
     type TrackPose,
     rideClearance,
 } from "../planners/track.js";
+import { reliefLevers, reliefProfile, reliefView } from "../planners/space.js";
 import { designDirs, designLayout, loadLibrary, type DesignEntry, type DesignLayout, type DesignPiece, type TrackDesign } from "../planners/td6.js";
 import {
     SpeedModels,
@@ -687,6 +689,21 @@ const zMacro = z.discriminatedUnion("op", [
         dir: zSide,
         size: z.enum(["small", "medium", "large"]).optional().describe("Défaut : la plus grande disponible pour ce type."),
     }),
+    z.object({ op: z.literal("vertical_drop"), height: z.number().int().min(7).max(60).describe("Chute totale en niveaux, entrée et ressource comprises."), turn: zSide.optional() }),
+    z.object({
+        op: z.literal("quarter_loop"),
+        exit: z.enum(QUARTER_LOOP_EXITS as unknown as [string, ...string[]]),
+        dir: zSide,
+        height: z.number().int().min(0).max(20).optional().describe("Niveaux de verticale avant le quart de boucle (2 par pièce up90), 2 par défaut."),
+        turn: zSide.optional().describe("Virage d'1 tuile à 90° sur la verticale."),
+    }),
+    z.object({
+        op: z.literal("dive"),
+        dir: zSide,
+        size: z.enum(["small", "medium", "large"]).optional().describe("Taille de la demi-boucle montante, large par défaut."),
+        height: z.number().int().min(0).max(20).optional().describe("Niveaux de verticale descendante en plus (2 par pièce down90)."),
+        turn: zSide.optional().describe("Virage d'1 tuile à 90° sur la verticale descendante (Frightmare)."),
+    }),
     z.object({ op: z.literal("brakes"), length: z.number().int().min(1).max(10), speed: z.number().int().min(1).max(30).optional() }),
     z.object({ op: z.literal("block_brakes") }),
     z.object({ op: z.literal("photo") }),
@@ -699,6 +716,9 @@ const MACRO_DOC =
     "drop{height,steep?} ; hill{height,steep?} (colline : monte puis redescend, freine le train et donne de l'airtime) ; turn{dir:left|right,size:small|medium|large,banked?,quarters?,slope:flat|up|down|steep_up|steep_down} ; " +
     "helix{dir,quarters,down?,size:small|large} ; inversion{kind:loop|immelmann|dive_loop|corkscrew|zero_g_roll|barrel_roll,dir,size?:small|medium|large} " +
     "(inversion complète, entrée et sortie à l'endroit ; sans size, la plus grande disponible) ; loop{dir} (petite boucle verticale) ; s_bend{dir} ; " +
+    "Verticalité (Frightmare) : dive{dir,size?,height?,turn?} (demi-boucle montante puis quart de boucle vers la verticale descendante, virage d'1 tuile à 90° si turn, ressource) ; " +
+    "quarter_loop{exit:corkscrew|large_corkscrew|half_loop|medium_half_loop|large_half_loop|barrel_roll|zero_g_roll|dive,dir,height?,turn?} (montée verticale, quart de boucle sur le dos, sortie à l'endroit) ; " +
+    "vertical_drop{height,turn?} (chute verticale ; height = chute totale, entrée à 60° et ressource comprises : 18 niveaux au moins depuis le plat). " +
     "brakes{length,speed?} ; block_brakes ; photo ; level (revient à plat) ; piece{name,chain?} (pièce brute, nom TrackElemType). " +
     "Les transitions de pente et d'inclinaison sont insérées automatiquement. Rayon et vitesse : turn small et helix small seulement à basse vitesse " +
     "(fin de parcours) ; après une grande chute, turn medium/large banked, helix large, ou un virage raide slope steep_down.";
@@ -1490,6 +1510,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         vehicle: td.vehicleObject,
                         expected: td.stats,
                         layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
+                        relief: reliefView(reliefProfile(table, layout.pieces)),
                         sequence: describeSequence(table, layout.pieces, baseZ, simulate(speedModels(ctx).get(td.rideType), table, layout.pieces, speedModels(ctx).get(td.rideType).stationSpeed).map((x) => kmh(x.vIn))),
                         inversionsAvailable: ride ? availableInversions(table, ride) : undefined,
                         next_hints: [
@@ -1521,6 +1542,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     ratings: { excitement: detail.excitement, intensity: detail.intensity, nausea: detail.nausea },
                     closed: st.closed,
                     layout: { ...stats, minLevel: stats.minLevel - baseZ / 16, maxLevel: stats.maxLevel - baseZ / 16 },
+                    relief: reliefView(reliefProfile(table, st.pieces)),
                     sequence: describeSequence(table, st.pieces, baseZ, simulate(speedModels(ctx).get(st.rideType), table, st.pieces, speedModels(ctx).get(st.rideType).stationSpeed, await rideTrain(ctx, st.rideId)).map((x) => kmh(x.vIn))),
                     inversionsAvailable: availableInversions(table, st.ride),
                 },
@@ -1606,6 +1628,9 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 measuredAt: m.measuredAt,
             });
             const dE = Math.round((b.ratings.excitement - a.ratings.excitement) * 100) / 100;
+            // Relief (COASTER_SPACE 8) : la note ne dit pas si le circuit est plus plat que la référence.
+            const reliefA = reliefProfile(table, a.pieces);
+            const reliefB = reliefProfile(table, b.pieces);
             return result({
                 budget: BUDGET.readLarge,
                 response: {
@@ -1613,6 +1638,8 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         `${a.name} : ${a.ratings.excitement} / ${a.ratings.intensity} / ${a.ratings.nausea} ; ${b.name} (référence) : ${b.ratings.excitement} / ${b.ratings.intensity} / ${b.ratings.nausea}` +
                         ` ; écart d'excitation ${dE >= 0 ? "−" : "+"}${Math.abs(dE).toFixed(2)}.`,
                     levers,
+                    reliefLevers: reliefLevers(reliefA, reliefB),
+                    relief: { ride: reliefView(reliefA), reference: reliefView(reliefB) },
                     ratings: {
                         ride: a.ratings,
                         reference: b.ratings,

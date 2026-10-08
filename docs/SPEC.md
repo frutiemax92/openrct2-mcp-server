@@ -776,12 +776,12 @@ Module du serveur qui, à partir d'une **pose** `(x, y, z, direction, pente, inc
 | `coaster_undo` | Retire les *n* dernières pièces (`trackremove`). |
 | `coaster_plan_closure` | Cherche un chemin de ≤ *N* pièces qui ramène à la station (13.5). |
 | `coaster_build_plan` | Compile un plan en **macro-éléments** (12.6) en pièces, valide, construit avec retour arrière en cas d'échec. |
-| `coaster_describe` | Relit un circuit du parc (`ride`) ou un design `.td6` (`design`) pour s'en inspirer : mesures (`layout`) et séquence des pièces groupées avec les hauteurs (12.6). |
+| `coaster_describe` | Relit un circuit du parc (`ride`) ou un design `.td6` (`design`) pour s'en inspirer : mesures (`layout`), relief (`relief` : pièces à 60° et 90°, éléments hauts, point haut par cinquième) et séquence des pièces groupées avec les hauteurs (12.6). |
 | `coaster_list_designs` | Liste les designs `.td6`/`.td7` installés (nom, type, véhicule installé ou non, notes attendues, emprise) (12.7). |
 | `coaster_place_design` | Place un `.td6` (12.7). |
 | `coaster_test` | Passe en `testing`, laisse tourner, renvoie le rapport (12.8). |
 | `coaster_rating_breakdown` | Recalcule les notes d'un circuit testé terme par terme, comme `RideRatings.cpp`, avec valeur d'entrée, plafond et leviers chiffrés (COASTER_REFERENCE P1). |
-| `coaster_compare` | Met un circuit et sa référence côte à côte (notes, écart par composante, emprise, profils de vitesse et de G, éléments) et donne les trois leviers qui rapportent le plus ; teste d'abord ce qui n'a pas de mesure à jour (COASTER_REFERENCE P2). |
+| `coaster_compare` | Met un circuit et sa référence côte à côte (notes, écart par composante, emprise, profils de vitesse et de G, éléments, relief) et donne les trois leviers qui rapportent le plus, plus les leviers de relief (`reliefLevers`) ; teste d'abord ce qui n'a pas de mesure à jour (COASTER_REFERENCE P2). |
 
 > Implémentation (1.4) : `coaster_plan_closure` est intégré à `coaster_build_plan` (`plan: []`, `close: true`, `dryRun` pour seulement planifier). Les montées de la fermeture portent une chaîne (garantit le retour en gare sans calcul d'énergie). Implémentation (1.5) : `coaster_list_designs` et `coaster_place_design` (12.7).
 
@@ -804,7 +804,7 @@ Claude planifie en 10 à 20 macro-éléments plutôt qu'en 150 pièces :
 
 Chaque macro est compilé en pièces par le planificateur ; échec = erreur structurée (« la pièce 14 collisionne avec le chemin en (60,64) »). Le plan reste éditable (liste de macros), ce qui permet à Claude de corriger localement.
 
-**Macros implémentées** (`planners/track.ts`, `compileMacros`) : `straight{length}`, `lift{height, steep?}` (chaîne droite ; raide par défaut si le type le permet, `steep: false` pour un lift 25°), `climb`, `drop{height, steep?}`, `hill{height, steep?}` (colline : montée puis descente de même hauteur), `turn{dir, size: small|medium|large, banked?, quarters?, slope: flat|up|down|steep_up|steep_down}` (`large` = huitième vers la diagonale puis retour, `steep_*` = virage d'1 tuile à 60°), `helix{dir, quarters, down?, size}` (large par défaut), `inversion{kind, dir, size?}`, `loop{dir}` (petite boucle verticale), `s_bend`, `brakes`, `block_brakes`, `photo`, `level`, `piece{name, chain?}`. Un plan compte jusqu'à 60 macros.
+**Macros implémentées** (`planners/track.ts`, `compileMacros`) : `straight{length}`, `lift{height, steep?}` (chaîne droite ; raide par défaut si le type le permet, `steep: false` pour un lift 25°), `climb`, `drop{height, steep?}`, `hill{height, steep?}` (colline : montée puis descente de même hauteur), `turn{dir, size: small|medium|large, banked?, quarters?, slope: flat|up|down|steep_up|steep_down}` (`large` = huitième vers la diagonale puis retour, `steep_*` = virage d'1 tuile à 60°), `helix{dir, quarters, down?, size}` (large par défaut), `inversion{kind, dir, size?}`, `dive{dir, size?, height?, turn?}` (demi-boucle puis quart de boucle vers la verticale descendante), `quarter_loop{exit, dir, height?, turn?}` (montée verticale, quart de boucle sur le dos, sortie à l'endroit), `vertical_drop{height, turn?}` (COASTER_SPACE.md, section 8), `loop{dir}` (petite boucle verticale), `s_bend`, `brakes`, `block_brakes`, `photo`, `level`, `piece{name, chain?}`. Un plan compte jusqu'à 60 macros.
 
 `inversion` pose une inversion complète (entrée et sortie à l'endroit). Sans `size`, la plus grande taille disponible est prise. Les paires viennent des 201 designs de RCT2 :
 
