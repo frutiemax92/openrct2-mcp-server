@@ -22,6 +22,8 @@ export interface RideTypeInfo {
     liftMaxSpeed: number;
     /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */
     launchAccelerationFactor: number;
+    /** Masse maximale d'un train ÷ 256 (MaxMass, Ride::UpdateMaxVehicles). */
+    maxMass: number;
 }
 
 export const RIDE_TYPES: readonly RideTypeInfo[] = [
@@ -69,7 +71,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 17,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 31
     },
     {
         "rideType": 1,
@@ -131,7 +134,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 2,
@@ -166,7 +170,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 26
     },
     {
         "rideType": 3,
@@ -232,7 +237,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 38,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 27
     },
     {
         "rideType": 4,
@@ -275,7 +281,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 16,
         "boosterSpeedFactor": 1,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 5,
@@ -300,7 +307,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 39
     },
     {
         "rideType": 6,
@@ -325,7 +333,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 78
     },
     {
         "rideType": 7,
@@ -351,7 +360,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 3
     },
     {
         "rideType": 8,
@@ -375,7 +385,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 9,
@@ -402,7 +413,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 4
     },
     {
         "rideType": 10,
@@ -434,7 +446,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 4
     },
     {
         "rideType": 11,
@@ -461,7 +474,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 2
     },
     {
         "rideType": 12,
@@ -479,7 +493,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 13,
@@ -509,7 +524,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 25
     },
     {
         "rideType": 14,
@@ -527,7 +543,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 15,
@@ -590,7 +607,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 18,
         "boosterAcceleration": 18,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 16,
@@ -616,7 +634,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 5
     },
     {
         "rideType": 17,
@@ -656,7 +675,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 18,
@@ -677,7 +697,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 19,
@@ -743,7 +764,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 20,
@@ -759,7 +781,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 21,
@@ -775,7 +798,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 22,
@@ -809,7 +833,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 23,
@@ -834,7 +859,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 24,
@@ -859,7 +885,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 25,
@@ -875,7 +902,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 26,
@@ -891,7 +919,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 27,
@@ -907,7 +936,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 28,
@@ -923,7 +953,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 30,
@@ -939,7 +970,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 32,
@@ -955,7 +987,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 33,
@@ -971,7 +1004,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 35,
@@ -987,7 +1021,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 36,
@@ -1003,7 +1038,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 37,
@@ -1019,7 +1055,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 38,
@@ -1035,7 +1072,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 39,
@@ -1051,7 +1089,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 40,
@@ -1067,7 +1106,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 41,
@@ -1083,7 +1123,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 42,
@@ -1105,7 +1146,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 40,
         "boosterAcceleration": 40,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": true
+        "lsmOnFlat": true,
+        "maxMass": 255
     },
     {
         "rideType": 43,
@@ -1123,7 +1165,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 44,
@@ -1194,7 +1237,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 25
     },
     {
         "rideType": 45,
@@ -1210,7 +1254,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 46,
@@ -1226,7 +1271,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 47,
@@ -1242,7 +1288,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 48,
@@ -1258,7 +1305,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 49,
@@ -1274,7 +1322,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 50,
@@ -1298,7 +1347,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 2
     },
     {
         "rideType": 51,
@@ -1368,7 +1418,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 31
     },
     {
         "rideType": 52,
@@ -1418,7 +1469,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 19
     },
     {
         "rideType": 53,
@@ -1449,7 +1501,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 54,
@@ -1481,7 +1534,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 4
     },
     {
         "rideType": 55,
@@ -1527,7 +1581,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 78
     },
     {
         "rideType": 56,
@@ -1543,7 +1598,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 78
     },
     {
         "rideType": 57,
@@ -1603,7 +1659,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 35
     },
     {
         "rideType": 58,
@@ -1619,7 +1676,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 35
     },
     {
         "rideType": 59,
@@ -1642,7 +1700,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 60,
@@ -1666,7 +1725,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 61,
@@ -1690,7 +1750,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 2
     },
     {
         "rideType": 62,
@@ -1747,7 +1808,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 25
     },
     {
         "rideType": 63,
@@ -1772,7 +1834,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 78
     },
     {
         "rideType": 64,
@@ -1788,7 +1851,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 25
     },
     {
         "rideType": 65,
@@ -1814,7 +1878,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 66,
@@ -1840,7 +1905,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 67,
@@ -1862,7 +1928,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 68,
@@ -1930,7 +1997,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 4,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 31
     },
     {
         "rideType": 69,
@@ -1948,7 +2016,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 15
     },
     {
         "rideType": 70,
@@ -1964,7 +2033,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 71,
@@ -1980,7 +2050,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 72,
@@ -2002,7 +2073,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 2
     },
     {
         "rideType": 73,
@@ -2047,7 +2119,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 74,
@@ -2089,7 +2162,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 16,
         "boosterSpeedFactor": 1,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 13
     },
     {
         "rideType": 75,
@@ -2118,7 +2192,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 40,
         "boosterAcceleration": 40,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 76,
@@ -2148,7 +2223,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 4
     },
     {
         "rideType": 77,
@@ -2164,7 +2240,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 78,
@@ -2185,7 +2262,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 79,
@@ -2210,7 +2288,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 81,
@@ -2226,7 +2305,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 255
     },
     {
         "rideType": 86,
@@ -2250,7 +2330,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 25,
         "boosterAcceleration": 25,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 23
     },
     {
         "rideType": 87,
@@ -2296,7 +2377,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 4,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 10
     },
     {
         "rideType": 88,
@@ -2329,7 +2411,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 27
     },
     {
         "rideType": 90,
@@ -2388,7 +2471,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 18,
         "boosterAcceleration": 52,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 91,
@@ -2448,7 +2532,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 15,
         "boosterAcceleration": 52,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 92,
@@ -2514,7 +2599,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 15,
         "boosterAcceleration": 52,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 93,
@@ -2551,7 +2637,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 4
     },
     {
         "rideType": 94,
@@ -2597,7 +2684,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 19
     },
     {
         "rideType": 95,
@@ -2653,7 +2741,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 0,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 18
     },
     {
         "rideType": 96,
@@ -2722,7 +2811,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 17,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 31
     },
     {
         "rideType": 97,
@@ -2771,7 +2861,8 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "poweredLiftAcceleration": 0,
         "boosterAcceleration": 68,
         "boosterSpeedFactor": 2,
-        "lsmOnFlat": false
+        "lsmOnFlat": false,
+        "maxMass": 19
     }
 ];
 

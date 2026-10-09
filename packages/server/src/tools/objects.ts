@@ -1,6 +1,7 @@
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { RIDE_TYPES } from "@openrct2-claude/protocol";
 import { z } from "zod";
+import { SegmentTable, availableInversions, rideTrackInfo } from "../planners/track.js";
 import { roleOf } from "../roles.js";
 import { BUDGET, defineTool, result, type ToolContext } from "./context.js";
 
@@ -33,7 +34,7 @@ export function registerObjectTools(server: McpServer, ctx: ToolContext): void {
             description:
                 "Objets installés ou chargés dans le parc, filtrés par type, texte et rôle. N'INVENTE JAMAIS d'identifiant : utilise ceux renvoyés ici. " +
                 "Seuls les objets chargés (loaded: true) sont utilisables ; sinon load_objects. Pagination : 25 par page, passe cursor pour la suite. " +
-                "Pour les attractions, 'category' indique shop/gentle/thrill… et 'placeable' si ride_place sait la poser (attractions plates et boutiques), 'tool' l'outil de pose (ride_place ou coaster_create pour les circuits). " +
+                "Pour les attractions, 'category' indique shop/gentle/thrill… et 'placeable' si ride_place sait la poser (attractions plates et boutiques), 'tool' l'outil de pose (ride_place ou coaster_create pour les circuits), 'inversions' celles du type de piste (le bois a la boucle verticale). " +
                 "Exemple : { type: 'small_scenery', role: 'tree_conifer', loadedOnly: true }.",
             input: {
                 type: z.enum(OBJECT_TYPES).optional(),
@@ -120,6 +121,10 @@ export function registerObjectTools(server: McpServer, ctx: ToolContext): void {
     );
 }
 
+// Table des pièces (fichier généré) pour les inversions par type de piste ; null si absente : champ omis.
+let tableCache: SegmentTable | null | undefined;
+const segmentTable = () => (tableCache === undefined ? (tableCache = SegmentTable.fromFile()) : tableCache);
+
 function compact(o: { identifier: string; name: string; type: string; loaded: boolean; index: number | null; extra?: Record<string, unknown> }) {
     const out: Record<string, unknown> = { id: o.identifier, name: o.name, type: o.type, loaded: o.loaded };
     const role = roleOf(o);
@@ -132,7 +137,13 @@ function compact(o: { identifier: string; name: string; type: string; loaded: bo
             out.placeable = !!rt.startTrackPieceName?.startsWith("flatTrack");
             // Outil de pose : ride_place (plates, boutiques) ou coaster_create (circuits).
             if (out.placeable) out.tool = "ride_place";
-            else if (rt.startTrackPieceName === "endStation" && rt.trackGroups.length) out.tool = "coaster_create";
+            else if (rt.startTrackPieceName === "endStation" && rt.trackGroups.length) {
+                out.tool = "coaster_create";
+                // Inversions du type de piste : à lire avant de changer de type pour une boucle (le bois en a une).
+                const ride = rideTrackInfo(rt.rideType);
+                const table = segmentTable();
+                if (ride && table) out.inversions = availableInversions(table, ride);
+            }
         }
     }
     if (o.type === "small_scenery" && o.extra) {

@@ -193,7 +193,28 @@ export function* train(params: RideTrainParams): Job {
         cars.push({ mass: car.mass, spacing: v ? v.spacing : 0, carMass: v ? v.carMass : 0 });
         id = car.nextCarOnTrain;
     }
-    const result: RideTrainResult = { cars, trains: ride.vehicles.length };
+    // Composition de l'objet : le serveur en déduit le train que le jeu créera (Ride::UpdateMaxVehicles) quand aucun
+    // train n'est sur la piste (attraction fermée, en construction).
+    const obj = ride.object;
+    const stationTiles = ride.stations.map((s) => s.length).filter((l) => l > 0);
+    const result: RideTrainResult = {
+        cars,
+        trains: ride.vehicles.length,
+        object: {
+            identifier: obj.identifier,
+            vehicles: obj.vehicles.map((v) => ({ spacing: v.spacing, carMass: v.carMass })),
+            minCars: obj.minCarsInTrain,
+            maxCars: obj.maxCarsInTrain,
+            front: obj.frontVehicle,
+            second: obj.secondVehicle,
+            third: obj.thirdVehicle,
+            rear: obj.rearVehicle,
+            defaultCar: obj.defaultVehicle,
+        },
+        stationTiles: stationTiles.length ? Math.min(...stationTiles) : 0,
+        mode: ride.mode,
+        rideType: ride.type,
+    };
     return result;
 }
 

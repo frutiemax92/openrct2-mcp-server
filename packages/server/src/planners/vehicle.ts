@@ -30,8 +30,86 @@ import { SegmentTable, STATION_TYPES } from "./track.js";
 interface SubpositionFile {
     accelerationFromPitch: number[];
     translationDistances: number[];
-    /** Par TrackElemType : par direction, pas = tangage × 8 + axes changés (bits x, y, z) ; première et dernière position. */
-    tracks: Record<string, { steps: number[][]; first: number[][]; last: number[][] }>;
+    /** Par tangage : cosinus × 2^31 (kPitchToDirectionVectorInt32.x). */
+    pitchCos: number[];
+    /** Par roulis : composante horizontale × 2^31 (kRollHorizontalComponent). */
+    rollHorizontal: number[];
+    /**
+     * Par TrackElemType : par direction, pas = tangage × 8 + axes changés (bits x, y, z), roulis de chaque sous-position ;
+     * première et dernière position ; g = [verticalFactor, lateralFactor] du TrackElementDescriptor (constante, ou nom
+     * d'une fonction de la progression, voir G_EVALUATORS ; 0 = aucun terme).
+     */
+    tracks: Record<string, { steps: number[][]; rolls?: number[][]; first: number[][]; last: number[][]; g?: [number | string, number | string] }>;
+}
+
+/** Division entière du C++ (troncature vers zéro). */
+const idiv = (a: number, b: number): number => Math.trunc(a / b);
+/** static_cast<uint16_t>. */
+const u16 = (x: number): number => ((x % 65536) + 65536) % 65536;
+
+/**
+ * Facteurs de G qui dépendent de la progression sur la pièce (TrackData.cpp, ted/TED.*.h : Evaluator*), portés tels
+ * quels. tools/gen-tables.mjs écrit leur nom sans le préfixe « Evaluator » ; un nom absent d'ici est signalé par
+ * gFactor (test vehicle.test.ts) au lieu d'être pris pour 0 en silence.
+ */
+const G_EVALUATORS: Record<string, (p: number) => number> = {
+    QuarterTurn3Tiles: (p) => -idiv(p, 2) + 134,
+    Down90QuarterLoop: (p) => idiv(p, 4) + 55,
+    Up90QuarterLoop: (p) => idiv(u16(-(p - 137)), 4) + 55,
+    VerticalLoop: (p) => idiv(Math.abs(p - 155), 2) + 28,
+    HalfLoopUp: (p) => idiv(u16(-(p - 155)), 2) + 28,
+    HalfLoopDown: (p) => idiv(p, 2) + 28,
+    MediumHalfLoopUp: (p) => idiv(244 - p, 4) + 51,
+    MediumHalfLoopDown: (p) => idiv(p, 4) + 51,
+    LargeHalfLoopUp: (p) => idiv(u16(-(p - 311)), 4) + 46,
+    LargeHalfLoopDown: (p) => idiv(p, 4) + 46,
+    SBendLeft: (p) => (p < 48 ? 98 : -98),
+    SBendRight: (p) => (p < 48 ? -98 : 98),
+    ZeroGRollUpLeft: (p) => 174 - p,
+    ZeroGRollUpRight: (p) => p - 174,
+    ZeroGRollDownLeft: (p) => 73 + p,
+    ZeroGRollDownRight: (p) => -(73 + p),
+    LargeZeroGRollUp: (p) => (p > 114 ? 371 - 2 * p : 0),
+    LargeZeroGRollDown: (p) => (p < 38 ? 67 + 2 * p : 0),
+    LargeZeroGRollUpLeft: (p) => 387 - 2 * p,
+    LargeZeroGRollUpRight: (p) => 2 * p - 387,
+    LargeZeroGRollDownLeft: (p) => 83 + 2 * p,
+    LargeZeroGRollDownRight: (p) => -(83 + 2 * p),
+    DiveLoopUp: (p) => 385 - 2 * p,
+    DiveLoopDown: (p) => 67 + 2 * p,
+    DiveLoopUpLeft: (p) => 380 - 2 * p,
+    DiveLoopUpRight: (p) => 2 * p - 380,
+    DiveLoopDownLeft: (p) => -(62 + 2 * p),
+    DiveLoopDownRight: (p) => 62 + 2 * p,
+    HeartLineTransferUp: (p) => (p < 32 ? 103 : p < 64 ? -103 : p < 96 ? 0 : p < 128 ? 103 : -103),
+    HeartLineTransferDown: (p) => (p < 32 ? -103 : p < 64 ? 103 : p < 96 ? 0 : p < 128 ? -103 : 103),
+    WaterSplash: (p) => (p < 32 ? -150 : p < 64 ? 150 : p < 96 ? 0 : p < 128 ? 150 : -150),
+};
+
+/** Valeur d'un facteur de G à la progression p ; lève si la table nomme une fonction non portée. */
+export function gFactor(f: number | string | undefined, p: number): number {
+    if (f === undefined || typeof f === "number") return f ?? 0;
+    const e = G_EVALUATORS[f];
+    if (!e) throw new Error(`Facteur de G non porté : Evaluator${f} (planners/vehicle.ts, G_EVALUATORS)`);
+    return e(p);
+}
+
+/** Facteurs de G nommés par la table et non portés (doit rester vide). */
+export function missingGEvaluators(vt: VehicleTable): string[] {
+    return vt.gEvaluatorNames().filter((n) => !G_EVALUATORS[n]);
+}
+
+/**
+ * Vehicle::GetGForces : G vertical et latéral (centièmes, signés) d'une voiture de tangage pitch, roulis roll, sur une
+ * pièce de facteurs vf / lf, à la vitesse v (unités internes).
+ */
+export function gForces(vt: VehicleTable, pitch: number, roll: number, vf: number, lf: number, v: number): { vert: number; lat: number } {
+    let vert = Math.floor((0x280000 * vt.pitchCos(pitch)) / 2 ** 32);
+    vert = Math.floor((vert * vt.rollHorizontal(roll)) / 2 ** 32);
+    let lat = 0;
+    if (vf !== 0) vert += idiv(Math.abs(v) * 98, vf);
+    if (lf !== 0) lat += idiv(Math.abs(v) * 98, lf);
+    return { vert: Math.floor((vert * 10) / 65536), lat: Math.floor((lat * 10) / 65536) };
 }
 
 export function vehicleTableFile(): string {
@@ -57,6 +135,25 @@ export class VehicleTable {
 
     accel(pitch: number): number {
         return this.data.accelerationFromPitch[pitch] ?? 0;
+    }
+
+    /** Tables de G présentes (fichier régénéré depuis l'ajout des G prédits). */
+    hasGForces(): boolean {
+        return !!this.data.pitchCos?.length && !!this.data.rollHorizontal?.length;
+    }
+
+    pitchCos(pitch: number): number {
+        return this.data.pitchCos[pitch] ?? this.data.pitchCos[0];
+    }
+
+    rollHorizontal(roll: number): number {
+        return this.data.rollHorizontal[roll] ?? 0;
+    }
+
+    gEvaluatorNames(): string[] {
+        const names = new Set<string>();
+        for (const t of Object.values(this.data.tracks)) for (const f of t.g ?? []) if (typeof f === "string") names.add(f);
+        return [...names];
     }
 
     distance(mask: number): number {
@@ -107,6 +204,11 @@ export interface ExactOptions {
     liftHillSpeed?: number;
     /** Vitesse de départ (mph) si la première pièce n'est pas une station. */
     vStartMph?: number;
+    /**
+     * Pièce où démarre la tête du train (à vStartMph, même si une station précède) ; les voitures de queue sont posées
+     * sur les pièces d'avant, comme dans le jeu (repartie d'un frein de bloc fermé, queue encore dans la montée).
+     */
+    startPiece?: number;
     /** Circuit fermé : le train revient au début ; sinon il s'arrête au bout de la dernière pièce. */
     closed?: boolean;
     maxTicks?: number;
@@ -131,6 +233,14 @@ export interface ExactPieceSpeed {
     stall: boolean;
     /** La tête du train n'a pas atteint la pièce (calage avant). */
     reached: boolean;
+    /**
+     * G de la tête du train sur la pièce, lissés comme les statistiques du jeu (moyenne avec le tick précédent,
+     * Vehicle::UpdateMeasurements), en G : latéraux (valeur absolue) max, verticaux max et min. Absents si les tables
+     * de G manquent.
+     */
+    gLat?: number;
+    gVertMax?: number;
+    gVertMin?: number;
 }
 
 export interface ExactResult {
@@ -141,11 +251,17 @@ export interface ExactResult {
     /** Durée du tour (s, 40 ticks par seconde) jusqu'au retour en station ou au bout de la piste. */
     seconds: number;
     completed: boolean;
+    /** Statistiques du tour en centièmes de G (Ride.maxLateralG, maxPositiveVerticalG, maxNegativeVerticalG), si tables de G. */
+    gForces?: { maxLat: number; maxPosVert: number; maxNegVert: number };
 }
 
 interface Sub {
     piece: number;
     pitch: number;
+    roll: number;
+    /** Facteurs de G (vertical, latéral) à cette sous-position (track_progress). */
+    vf: number;
+    lf: number;
     /** Distance pour entrer dans cette sous-position depuis la précédente. */
     dist: number;
 }
@@ -180,7 +296,7 @@ export function flattenCircuit(
                 const start = [loc[0] + first[0], loc[1] + first[1], loc[2] + first[2]];
                 mask = prevEnd ? (start[0] !== prevEnd[0] ? 1 : 0) | (start[1] !== prevEnd[1] ? 2 : 0) | (start[2] !== prevEnd[2] ? 4 : 0) : 1;
             }
-            subs.push({ piece: i, pitch, dist: vt.distance(mask) });
+            subs.push({ piece: i, pitch, roll: t.rolls?.[dir]?.[k] ?? 0, vf: gFactor(t.g?.[0], k), lf: gFactor(t.g?.[1], k), dist: vt.distance(mask) });
         });
         const last = t.last[dir];
         prevEnd = [loc[0] + last[0], loc[1] + last[1], loc[2] + last[2]];
@@ -202,8 +318,9 @@ export function exactSupported(vt: VehicleTable | null, pieces: TrackPieceInfo[]
 
 /**
  * Simule un tour : depuis l'arrêt en station si la première pièce est une station (départ, puis marche libre), sinon
- * depuis le début de la première pièce à vStartMph, les voitures de queue sur du plat fictif. Renvoie, pour chaque
- * pièce, les vitesses de la tête (comme les relevés de coaster_test) ; null si une pièce n'a pas de sous-positions.
+ * depuis le début de la première pièce (ou de startPiece) à vStartMph, les voitures de queue sur les pièces d'avant
+ * (sur du plat fictif avant la première). Renvoie, pour chaque pièce, les vitesses de la tête (comme les relevés de
+ * coaster_test) ; null si une pièce n'a pas de sous-positions.
  */
 export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[], opts: ExactOptions, vt = vehicleTable()): ExactResult | null {
     if (!exactSupported(vt, pieces)) return null;
@@ -246,7 +363,10 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
     let headStart = 0;
     let departing = false;
     let v = 0;
-    if (isStation[0]) {
+    if (opts.startPiece !== undefined && opts.startPiece > 0 && opts.startPiece < pieces.length) {
+        headStart = pieceStart[opts.startPiece];
+        v = mphToVelocity(opts.vStartMph ?? 0);
+    } else if (isStation[0]) {
         let last = 0;
         while (last + 1 < pieces.length && isStation[last + 1]) last++;
         headStart = pieceStart[last] + Math.min(17, (pieceStart[last + 1] ?? n) - pieceStart[last] - 1);
@@ -302,7 +422,34 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
     let ticks = 0;
     let travelled = 0; // sous-positions franchies par la tête depuis le départ
 
+    // G : la tête du train (voiture d'essai) les mesure au début de chaque tick, avant de bouger
+    // (Vehicle::UpdateMeasurements, puis GetGForces lissé : moyenne entière avec la valeur du tick précédent), depuis le
+    // départ de la station (test_reset : 1 G vertical, 0 latéral).
+    const withG = vt.hasGForces();
+    let prevVert = 100;
+    let prevLat = 0;
+    let maxLat = 0;
+    let maxPosVert = 100;
+    let maxNegVert = 100;
+    const gOut = pieces.map(() => ({ lat: 0, vMax: -Infinity, vMin: Infinity }));
+
     for (; ticks < maxTicks; ticks++) {
+        if (withG) {
+            const s = subAt(cars[0].j);
+            const g = gForces(vt, s?.pitch ?? 0, s?.roll ?? 0, s?.vf ?? 0, s?.lf ?? 0, v);
+            prevVert = idiv(g.vert + prevVert, 2);
+            prevLat = idiv(g.lat + prevLat, 2);
+            const lat = Math.abs(prevLat);
+            maxLat = Math.max(maxLat, lat);
+            maxPosVert = Math.max(maxPosVert, prevVert);
+            maxNegVert = Math.min(maxNegVert, prevVert);
+            const r = s ? gOut[s.piece] : undefined;
+            if (r) {
+                r.lat = Math.max(r.lat, lat);
+                r.vMax = Math.max(r.vMax, prevVert);
+                r.vMin = Math.min(r.vMin, prevVert);
+            }
+        }
         if (departing && v <= DEPART_SPEED) acc = DEPART_ACCELERATION;
         // handleBlockBrake : pièce sous la tête, frein de bloc ouvert (un seul train).
         if (headPiece >= 0 && BLOCK_BRAKES.has(names[headPiece]) && v >= 0) {
@@ -416,5 +563,14 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
         if (!r.vOut) r.vOut = velocityToMph(Math.max(v, 0));
         if (!Number.isFinite(r.vMin)) r.vMin = r.vIn;
     }
-    return { pieces: out, stalledAt, ticks, seconds: ticks / 40, completed };
+    if (withG) {
+        out.forEach((r, i) => {
+            const g = gOut[i];
+            if (!r.reached || !Number.isFinite(g.vMax)) return;
+            r.gLat = g.lat / 100;
+            r.gVertMax = g.vMax / 100;
+            r.gVertMin = g.vMin / 100;
+        });
+    }
+    return { pieces: out, stalledAt, ticks, seconds: ticks / 40, completed, gForces: withG ? { maxLat: maxLat, maxPosVert, maxNegVert } : undefined };
 }

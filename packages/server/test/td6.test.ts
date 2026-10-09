@@ -3,7 +3,9 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { TRACK_ELEM_TYPES } from "@openrct2-claude/protocol";
 import { describe, expect, it } from "vitest";
-import { SegmentTable, blockSections } from "../src/planners/track.js";
+import { STATION_LAUNCH_MODES, SegmentTable, blockBrakesBeforeLift, blockSections, rideTrackInfo } from "../src/planners/track.js";
+import { designTrain, exactTrain } from "../src/planners/speed.js";
+import { simulateExact } from "../src/planners/vehicle.js";
 import { decodeRle, designDirs, designLayout, loadLibrary, parseTrackDesign } from "../src/planners/td6.js";
 
 /** Codage RLE en littéraux seuls (suffisant pour le décodeur), plus 4 octets de somme de contrôle. */
@@ -101,6 +103,82 @@ describe("td6", () => {
         expect(withBlock).toMatchObject({ sections: 3, autoBlockMode: true, maxTrains: 2, boundaries: "station@0, lift@5, block@7" });
         // Sans chaîne, la fin de montée ne ferme pas de section.
         expect(blockSections([...station, p("up25ToFlat"), p("blockBrakes")]).maxTrains).toBe(1);
+    });
+
+    it.skipIf(!table)("frein de bloc entre la station et le premier lift : refusé, sauf au pied du lift avec le train hors de la station", () => {
+        const T = TRACK_ELEM_TYPES as Record<string, number>;
+        const p = (name: string, chain = false) => ({ type: T[name], x: 0, y: 0, z: 0, direction: 0 as const, chain });
+        const station = [p("endStation"), p("middleStation"), p("beginStation")];
+        const lift = [p("flatToUp25", true), p("up25", true), p("up25ToFlat", true)];
+        const flats = (n: number) => Array.from({ length: n }, () => p("flat"));
+        const idx = (pieces: ReturnType<typeof p>[], opts: Parameters<typeof blockBrakesBeforeLift>[1] = {}) =>
+            blockBrakesBeforeLift(pieces, { table: table!, ...opts }).map((b) => b.index);
+        // Black Widow de Sonnet : station, plat, frein de bloc, lift. Le train de 5 tuiles resterait dans la station.
+        expect(blockBrakesBeforeLift([...station, p("flat"), p("blockBrakes"), ...lift], { table: table!, trainTiles: 5 })).toEqual([{ index: 4, gapTiles: 1, needTiles: 5 }]);
+        // Assez de piste pour le train : permis au pied du lift.
+        expect(idx([...station, ...flats(5), p("blockBrakes"), ...lift], { trainTiles: 5 })).toEqual([]);
+        // Sans longueur de train : celle de la station (3 tuiles).
+        expect(idx([...station, ...flats(2), p("blockBrakes"), ...lift])).toEqual([5]);
+        expect(idx([...station, ...flats(3), p("blockBrakes"), ...lift])).toEqual([]);
+        // Pas au pied du lift (un plat entre le frein et la chaîne), ou sans table : refusé.
+        expect(idx([...station, ...flats(6), p("blockBrakes"), p("flat"), ...lift])).toEqual([9]);
+        expect(blockBrakesBeforeLift([...station, ...flats(6), p("blockBrakes"), ...lift]).map((b) => b.index)).toEqual([9]);
+        // Frein de bloc en bout de circuit ouvert, lift pas encore posé : refusé.
+        expect(idx([...station, ...flats(6), p("blockBrakes")])).toEqual([9]);
+        expect(idx([...station, ...lift, p("flat"), p("blockBrakes"), p("flat")])).toEqual([]);
+        // Frein de bloc avant la station (fin de parcours) : permis.
+        expect(idx([...lift, p("flat"), p("blockBrakes"), ...station])).toEqual([]);
+        // Liste qui commence au milieu d'un circuit fermé : la sortie de station reprend au début.
+        expect(idx([p("flat"), p("blockBrakes"), p("flat"), ...lift, p("flat"), ...station])).toEqual([1]);
+        // Lancement motorisé au lieu d'une chaîne.
+        expect(idx([...station, p("flatToUp25"), p("poweredLift"), p("up25ToFlat"), p("blockBrakes")])).toEqual([]);
+        // Frein de bloc qui protège une seconde station (Dream Chariots) ; circuit lancé depuis la station.
+        expect(idx([...station, p("flat"), p("blockBrakes"), ...station, ...lift])).toEqual([]);
+        expect(idx([...station, p("flat"), p("blockBrakes"), p("flat")], { stationLaunch: true })).toEqual([]);
+    });
+
+    it.skipIf(!hasLibrary)("frein de bloc avant le premier lift : les designs RCT2 qui le font l'ont au pied du lift", () => {
+        const bad: string[] = [];
+        for (const e of loadLibrary(dirs)) {
+            if (!e.design) continue;
+            const l = designLayout(e.design, table!, { x: 50, y: 50, z: 160 }, 0);
+            if (!l.closed) continue;
+            const early = blockBrakesBeforeLift(l.pieces, { table: table!, stationLaunch: STATION_LAUNCH_MODES.has(e.design.rideMode) });
+            if (early.length) bad.push(`${e.name}: ${JSON.stringify(early)}`);
+        }
+        console.log(bad.join("\n"));
+        // Écarts voulus (SPEC 12.6) : Contortion (frein suivi d'un S-bend et de virages avant le lift), Flying Dutchman
+        // Gold Mine (0,8 tuile entre la station et le frein au pied du lift : le train qui attend resterait en station).
+        expect(bad.filter((n) => !/^(Contortion|Flying Dutchman Gold Mine):/.test(n))).toEqual([]);
+    });
+
+    it.skipIf(!hasLibrary)("G prédits par le simulateur exact : dans la marge enregistrée par les designs (0,32 G) pour 95 % d'entre eux", () => {
+        let n = 0;
+        let lat = 0;
+        let vert = 0;
+        for (const e of loadLibrary(dirs)) {
+            const td = e.design;
+            if (!td || !rideTrackInfo(td.rideType)) continue;
+            const l = designLayout(td, table!, { x: 0, y: 0, z: 0 }, 0);
+            if (!l.closed || l.unknownPieces.length) continue;
+            const ex = simulateExact(l.pieces, {
+                rideType: td.rideType,
+                train: exactTrain(designTrain(td)),
+                liftHillSpeed: td.liftHillSpeed,
+                rideMode: td.rideMode,
+                closed: true,
+                blockZ: (t) => table!.get(t)?.elements[0]?.z ?? 0,
+            });
+            if (!ex?.completed || !ex.gForces) continue;
+            n++;
+            // Le fichier tronque à 32 centièmes : la vraie valeur est dans [enregistré, enregistré + 0,32).
+            const within = (g: number, stored: number) => g / 100 >= stored - 0.05 && g / 100 < stored + 0.37;
+            if (within(ex.gForces.maxLat, td.stats.maxLatG)) lat++;
+            if (within(ex.gForces.maxPosVert, td.stats.maxPosG)) vert++;
+        }
+        expect(n).toBeGreaterThan(50);
+        expect(lat / n).toBeGreaterThan(0.95);
+        expect(vert / n).toBeGreaterThan(0.95);
     });
 
     it.skipIf(!hasLibrary)("designs à sections de bloc : leur nombre de trains tient dans les sections comptées", () => {

@@ -17,6 +17,7 @@ import { z } from "zod";
 import { analyzeConnectivity } from "../planners/connectivity.js";
 import type { PlannedPathTile } from "../planners/path.js";
 import type { InverseOp } from "../state/journal.js";
+import { rememberCarsPerTrain } from "./coasters.js";
 import { BUDGET, defineTool, result, toolError, zDirection, zDryRun, type ToolContext } from "./context.js";
 import { placePathTiles, routeToNetwork } from "./helpers.js";
 
@@ -360,8 +361,10 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
                 if (value === undefined) continue;
                 const r = await ctx.bridge.call("batch.execute", { ops: [{ action: "ridesetvehicle", args: { ride, type, value, colour: 0 } }], dryRun: false, stopOnError: true });
                 const res = r.results[0];
-                if (res?.ok) done.push(`${label}=${value}`);
-                else warnings.push(`${label} : ${res?.error?.message ?? "refusé"}${/clos|closed/i.test(res?.error?.message ?? "") ? " (ride_set_status closed d'abord)" : ""}`);
+                if (res?.ok) {
+                    done.push(`${label}=${value}`);
+                    if (type === 1) rememberCarsPerTrain(ride, value);
+                } else warnings.push(`${label} : ${res?.error?.message ?? "refusé"}${/clos|closed/i.test(res?.error?.message ?? "") ? " (ride_set_status closed d'abord)" : ""}`);
             }
             if (trains !== undefined) warnings.push("Le jeu ramène trains au maximum permis sans erreur : vérifie avec get_ride une fois l'attraction rouverte (vehicles).");
             return result({ budget: BUDGET.write, response: { summary: `Attraction ${ride} : ${done.length} réglage(s) appliqué(s).`, applied: done, warnings } });

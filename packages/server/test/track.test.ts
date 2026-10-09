@@ -2,6 +2,7 @@ import type { RegionTile } from "@openrct2-claude/protocol";
 import { describe, expect, it } from "vitest";
 import {
     Occupancy,
+    blockProblem,
     blockSpan,
     blocksClash,
     PITCH,
@@ -90,6 +91,15 @@ describe("transitions et macros", () => {
         expect(down.reduce((z, s) => z + s.endZ - s.beginZ, 0)).toBe(-96);
         expect(down.some((s) => s.endSlope === PITCH.down60)).toBe(true);
         expect(down.length).toBeLessThan(up.length);
+    });
+
+    it("fait une chute franche de 21 niveaux en bois, sans palier en escalier (LongBase)", () => {
+        const wooden = rideTrackInfo(rideTypeByName("wooden_roller_coaster"))!;
+        const down = slopeRun(table, wooden, 0, -21 * 16, { steep: true, chain: false })!;
+        expect(down.reduce((z, s) => z + s.endZ - s.beginZ, 0)).toBe(-21 * 16);
+        expect(down.slice(0, -1).every((s) => s.endSlope !== PITCH.flat)).toBe(true);
+        expect(down.reduce((n, s) => n + s.elements.length, 0)).toBeLessThanOrEqual(9);
+        expect(down.filter((s) => s.endSlope === PITCH.down60 && s.beginSlope === PITCH.down60).length).toBeGreaterThanOrEqual(3);
     });
 
     it("compile un plan de macros avec transitions automatiques", () => {
@@ -248,5 +258,28 @@ describe("dégagement réel des blocs (TrackPlaceAction)", () => {
         expect(blockSpan({ ...b, vertical: undefined }, 40)).toEqual([0, 72]);
         expect(blocksClash(b, { ...b, z: 48 }, 40)).toBe(true);
         expect(blocksClash(b, { ...b, z: 64 }, 40)).toBe(false);
+    });
+});
+
+describe("passage sous ou au-dessus d'une autre attraction", () => {
+    // Autre attraction (ride 7) : une droite posée au niveau 10, dégagement réel jusqu'au niveau 11.5.
+    const other: RegionTile = { ...flatTile, r: [7], rh: 11.5, ri: [[10, 11.5, 7]] };
+    const e = (lvl: number) => ({ x: 10, y: 10, z: lvl * 16, cz: 0 });
+    const envO: TrackEnv = { ...env, get: () => other, clearance: 24 };
+
+    it("passe dessous si son dégagement finit sous la base de l'autre", () => {
+        expect(blockProblem(envO, e(8.5))).toBeNull(); // [8.5, 10[
+        expect(blockProblem(envO, e(9))).toBe("autre attraction");
+    });
+
+    it("passe dessus dès sa base au niveau du dégagement de l'autre", () => {
+        expect(blockProblem(envO, e(11.5))).toBeNull();
+        expect(blockProblem(envO, e(11))).toBe("autre attraction");
+    });
+
+    it("ignore ses propres pièces (contrôlées par Occupancy) et garde l'ancien refus sans ri", () => {
+        expect(blockProblem({ ...envO, rideId: 7 }, e(10))).toBeNull();
+        const old: RegionTile = { ...flatTile, r: [7], rh: 11.5 };
+        expect(blockProblem({ ...envO, get: () => old }, e(8))).toBe("autre attraction");
     });
 });

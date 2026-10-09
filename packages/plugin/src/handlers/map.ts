@@ -36,7 +36,7 @@ export function scanTile(x: number, y: number): RegionTile {
     let wl = 0;
     let sh = 0;
     let rh = 0;
-    let ri: [number, number][] | undefined;
+    let ri: [number, number, number][] | undefined;
     for (let i = 0; i < els.length; i++) {
         const el = els[i];
         if (el.isGhost) continue;
@@ -68,7 +68,7 @@ export function scanTile(x: number, y: number): RegionTile {
                 rides ??= [];
                 if (rides.indexOf(t.ride) < 0) rides.push(t.ride);
                 rh = Math.max(rh, baseHeightToLevel(t.clearanceHeight));
-                (ri ??= []).push([baseHeightToLevel(t.baseHeight), baseHeightToLevel(t.clearanceHeight)]);
+                (ri ??= []).push([baseHeightToLevel(t.baseHeight), baseHeightToLevel(t.clearanceHeight), t.ride]);
                 break;
             }
             case "entrance": {

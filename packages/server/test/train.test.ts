@@ -3,18 +3,25 @@ import { describe, expect, it } from "vitest";
 import {
     DEFAULT_MODEL,
     SPACING_PER_TILE,
+    blockSpacing,
     brakeRuns,
     dragK2,
     fitModel,
     simulate,
     trainLength,
     trainShape,
+    composeTrain,
+    designTrain,
+    rideVehicleObject,
+    DEFAULT_TRAIN,
+    SpeedModels,
+    type TrainObject,
     type MeasuredPiece,
     type SpeedModel,
     type TrainShape,
 } from "../src/planners/speed.js";
 import { designLayout, parseTrackDesign } from "../src/planners/td6.js";
-import { SegmentTable, compileMacros, rideTrackInfo, type TrackPose } from "../src/planners/track.js";
+import { SegmentTable, compileMacros, endPose, rideTrackInfo, type PlannedPiece, type TrackPose } from "../src/planners/track.js";
 
 const table = SegmentTable.fromFile() as SegmentTable;
 const twister = rideTrackInfo(51)!;
@@ -120,5 +127,108 @@ describe("sections de freins", () => {
             { tiles: 4, beforeStation: false },
             { tiles: 2, beforeStation: true },
         ]);
+    });
+});
+
+describe("placement des freins de bloc", () => {
+    // Sonnet, « Black Colossus » : deux freins de bloc à mi-parcours, l'un après l'autre, et des freins simples en gare.
+    const course = [
+        { op: "lift", height: 10 },
+        { op: "straight", length: 2 },
+        { op: "block_brakes" },
+        { op: "drop", height: 4 },
+        { op: "straight", length: 3 },
+        { op: "block_brakes" },
+        { op: "drop", height: 6 },
+        { op: "straight", length: 40 },
+    ] as const;
+
+    it("signale deux freins de bloc proches et l'absence de frein de bloc sur le plat d'arrivée", () => {
+        const c = circuitWith([...course, { op: "brakes", length: 4 }]);
+        const sp = blockSpacing(table, c, { closed: true, trainTiles: 4.4 });
+        expect(sp.close).toHaveLength(1);
+        expect(c[sp.close[0].first].name).toBe("blockBrakes");
+        expect(sp.noStationBlock?.brakes).toHaveLength(4);
+        expect(sp.noStationBlock?.lastBoundary).toEqual({ kind: "block", index: sp.close[0].second });
+    });
+
+    it("se tait avec un frein de bloc à mi-parcours et un au bout des freins d'arrivée", () => {
+        const c = circuitWith([...course.slice(0, 3), ...course.slice(6), { op: "brakes", length: 3 }, { op: "block_brakes" }]);
+        const sp = blockSpacing(table, c, { closed: true, trainTiles: 4.4 });
+        expect(sp.close).toEqual([]);
+        expect(sp.noStationBlock).toBeUndefined();
+    });
+
+    it.skipIf(!existsSync(FRIGHTMARE))("RCT2 : Frightmare, Black Widow, Medusa (deux freins de bloc en arrivée de gare) ne disent rien", () => {
+        for (const f of ["Frightmare.TD6", "Black Widow.TD6", "Medusa.TD6"]) {
+            const pieces = designLayout(parseTrackDesign(readFileSync(FRIGHTMARE.replace("Frightmare.TD6", f)), f), table, { x: 0, y: 0, z: 0 }, 0).pieces;
+            const sp = blockSpacing(table, pieces, { closed: true, trainTiles: 4 });
+            expect([f, sp.close, sp.noStationBlock]).toEqual([f, [], undefined]);
+        }
+    });
+
+    it("circuit ouvert : seuil relatif seulement avec une longueur visée", () => {
+        const c = circuitWith(course.slice(0, 6));
+        expect(blockSpacing(table, c, { closed: false, trainTiles: 4.4 }).close).toEqual([]);
+        expect(blockSpacing(table, c, { closed: false, trainTiles: 4.4, expectedTiles: 200 }).close).toHaveLength(1);
+    });
+});
+
+/** Station de 6 tuiles de montagnes russes en bois vers +x, puis le plan. */
+function circuitWith(plan: Parameters<typeof compileMacros>[3]): PlannedPiece[] {
+    const names = ["beginStation", "middleStation", "middleStation", "middleStation", "middleStation", "endStation"];
+    const station = names.map((n, i) => ({ type: table.byName(n)!.type, x: 40 + i, y: 40, z: 14 * 16, direction: 2 as const, name: n }));
+    const c = compileMacros(table, rideTrackInfo(52)!, endPose(station[5], table.require(station[5].type)), plan);
+    expect(c.errors).toEqual([]);
+    return [...station, ...c.pieces];
+}
+
+describe("train réel de l'objet (Ride::UpdateMaxVehicles)", () => {
+    const mft = rideVehicleObject("rct2.ride.mft")!;
+    const wooden = 52;
+
+    it("data/ride_vehicles.json porte les voitures des objets, par identifiant et nom DAT", () => {
+        expect(mft).toBeDefined();
+        expect(rideVehicleObject("MFT")).toEqual(mft);
+        expect(mft.vehicles).toEqual([
+            { spacing: 174320, carMass: 350 },
+            { spacing: 122024, carMass: 290 },
+        ]);
+        expect([mft.front, mft.defaultCar, mft.minCars, mft.maxCars]).toEqual([0, 1, 6, 12]);
+    });
+
+    it("compose le train : voiture de tête puis voitures par défaut, à vide", () => {
+        const t = composeTrain(mft, { stationTiles: 6, rideType: wooden, mode: 1 })!;
+        expect(t.cars).toBe(12);
+        expect(t.mass).toBe(350 + 11 * 290);
+        expect(t.carLength * t.cars * SPACING_PER_TILE).toBeCloseTo(174320 + 11 * 122024, 0);
+    });
+
+    it("borne les voitures par la station (marge des sections de bloc) et garde le minimum de l'objet", () => {
+        // 5 tuiles − 0x16B2A = 1 300 566 : tête + 9 voitures (1 272 536) passent, pas une 11e.
+        expect(composeTrain(mft, { stationTiles: 5, rideType: wooden, mode: 34 })!.cars).toBe(10);
+        expect(composeTrain(mft, { stationTiles: 1, rideType: wooden, mode: 1 })!.cars).toBe(6);
+        expect(composeTrain(mft, { stationTiles: 6, rideType: wooden, mode: 1, wantedCars: 8 })!.cars).toBe(8);
+    });
+
+    it("borne les voitures par la masse maximale du type (MaxMass << 8)", () => {
+        const heavy: TrainObject = { ...mft, vehicles: [{ spacing: 100000, carMass: 1000 }], front: 255, defaultCar: 0, minCars: 1, maxCars: 10 };
+        // Montagnes russes en bois : MaxMass 19 → 4864, donc 4 voitures de 1000.
+        expect(composeTrain(heavy, { stationTiles: 10, rideType: wooden })!.cars).toBe(4);
+    });
+
+    it("un design .td6 prend son véhicule : Black Widow (MFT, 7 voitures) pèse 2090, pas 7 × 632", () => {
+        const t = designTrain({ vehicleObject: "MFT     ", carsPerTrain: 7, rideType: wooden })!;
+        expect(t.mass).toBe(350 + 6 * 290);
+        expect(designTrain({ vehicleObject: "INCONNU", carsPerTrain: 7, rideType: wooden })!.mass).toBe(DEFAULT_TRAIN.mass);
+    });
+
+    it("le train de bois léger perd plus de vitesse que le train par défaut (traînée quadratique ÷ masse)", () => {
+        const plan = circuitWith([{ op: "lift", height: 14 }, { op: "drop", height: 12 }, { op: "hill", height: 8 }, { op: "hill", height: 6 }]);
+        const model = new SpeedModels(null).get(wooden);
+        const light = simulate(model, table, plan, model.stationSpeed, composeTrain(mft, { stationTiles: 6, rideType: wooden }));
+        const heavy = simulate(model, table, plan, model.stationSpeed, DEFAULT_TRAIN);
+        const last = plan.length - 1;
+        expect(light[last].vIn).toBeLessThan(heavy[last].vIn - 1);
     });
 });

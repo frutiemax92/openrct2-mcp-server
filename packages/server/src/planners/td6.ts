@@ -62,6 +62,10 @@ export interface TrackDesign {
         rideLengthM: number;
         inversions: number;
         drops: number;
+        /** G enregistrés avec le design (octets 0x55-0x57 × 32 centièmes, kTD46GForcesMultiplier : précision 0,32 G par défaut). */
+        maxPosG: number;
+        maxNegG: number;
+        maxLatG: number;
     };
     /** Encombrement annoncé par le fichier (tuiles). */
     spaceRequired: { x: number; y: number };
@@ -213,6 +217,9 @@ export function parseTrackDesign(buf: Uint8Array, file = "design.td6"): TrackDes
             rideLengthM: dv.getUint16(0x53, true),
             inversions: u8(0x58) & 0x1f,
             drops: u8(0x59) & 0x3f,
+            maxPosG: (u8(0x55) * 32) / 100,
+            maxNegG: (dv.getInt8(0x56) * 32) / 100,
+            maxLatG: (u8(0x57) * 32) / 100,
         },
         spaceRequired: { x: u8(0x80), y: u8(0x81) },
         elements,

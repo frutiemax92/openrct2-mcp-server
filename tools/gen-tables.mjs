@@ -3,7 +3,9 @@
 //  - packages/protocol/src/generated/actionArgs.ts : clés lues par AcceptParameters, par nom d'action (SPEC F5, F6)
 //  - packages/protocol/src/generated/rideTypes.ts  : rideType -> nom, catégorie, pièce de départ (SPEC 9.4), poussée des pièces motorisées
 //  - data/ride_start_piece.json                     : même table, au format JSON
-//  - data/vehicle_subpositions.json                : sous-positions des véhicules, accélération par tangage, distances (simulateur exact)
+//  - data/vehicle_subpositions.json                : sous-positions des véhicules (tangage, roulis), accélération par tangage, distances,
+//                                                    facteurs de G par pièce (simulateur exact, G prédits)
+//  - data/ride_vehicles.json                       : voitures des objets d'attraction (masse, espacement, composition des trains)
 //
 // Usage : node tools/gen-tables.mjs [chemin du dépôt OpenRCT2]   (défaut : ..)
 
@@ -130,6 +132,8 @@ for (const f of rtdFiles) {
             boosterAcceleration: legacy[1] ?? 0,
             boosterSpeedFactor: legacy[2] ?? 2,
             lsmOnFlat: /RtdFlag::hasLsmBehaviourOnFlat/.test(body),
+            // Masse maximale d'un train (MaxMass << 8, Ride::UpdateMaxVehicles) : borne le nombre de voitures.
+            maxMass: Number(/\.MaxMass\s*=\s*(\d+)/.exec(body)?.[1] ?? 0),
         };
         rtdInfo.set(m[1], { category, start, enabled: groupsOf("enabledTrackGroups"), extra: groupsOf("extraTrackGroups"), power });
     }
@@ -314,6 +318,7 @@ const ratingFlags = {
 const tedFiles = [join(src, "ride", "TrackData.cpp"), ...walk(join(src, "ride", "ted")).filter((f) => f.endsWith(".h"))];
 const seqClearance = new Map();
 const tedSeqs = new Map();
+const tedFactors = new Map();
 for (const f of tedFiles) {
     const text = readFileSync(f, "utf8").replace(/\/\/[^\n]*/g, "");
     for (const m of text.matchAll(/SequenceDescriptor\s+(k\w+)\s*=\s*\{\s*\.clearance\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,([^\n]*)/g)) {
@@ -324,6 +329,13 @@ for (const f of tedFiles) {
         const body = braced(text, text.indexOf("{", m.index + m[0].length - 1));
         const sd = /\.sequenceData\s*=\s*\{\s*(\d+)\s*,\s*\{([^}]*)\}/.exec(body);
         tedSeqs.set(m[1], sd ? [...sd[2].matchAll(/k\w+/g)].map((x) => x[0]).slice(0, Number(sd[1])) : []);
+        // Facteurs de G (GetGForces) : constante (EvaluatorConst<n>) ou nom d'une fonction de la progression.
+        const factor = (key) => {
+            const f = new RegExp(`\\.${key}\\s*=\\s*(\\w+)(?:<\\s*(-?\\d+)\\s*>)?`).exec(body);
+            if (!f) return 0;
+            return f[1] === "EvaluatorConst" ? Number(f[2]) : f[1].replace(/^Evaluator/, "");
+        };
+        tedFactors.set(m[1], [factor("verticalFactor"), factor("lateralFactor")]);
     }
 }
 const trackData = readFileSync(join(src, "ride", "TrackData.cpp"), "utf8");
@@ -369,7 +381,7 @@ writeFileSync(
 writeFileSync(
     join(genDir, "rideTypes.ts"),
     banner +
-        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */\n    poweredLiftAcceleration: number;\n    /** Poussée des boosters, sous leur vitesse cible. */\n    boosterAcceleration: number;\n    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */\n    boosterSpeedFactor: number;\n    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */\n    lsmOnFlat: boolean;\n    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */\n    liftMinSpeed: number;\n    liftMaxSpeed: number;\n    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */\n    launchAccelerationFactor: number;\n}\n\n" +
+        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */\n    poweredLiftAcceleration: number;\n    /** Poussée des boosters, sous leur vitesse cible. */\n    boosterAcceleration: number;\n    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */\n    boosterSpeedFactor: number;\n    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */\n    lsmOnFlat: boolean;\n    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */\n    liftMinSpeed: number;\n    liftMaxSpeed: number;\n    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */\n    launchAccelerationFactor: number;\n    /** Masse maximale d'un train ÷ 256 (MaxMass, Ride::UpdateMaxVehicles). */\n    maxMass: number;\n}\n\n" +
         "export const RIDE_TYPES: readonly RideTypeInfo[] = " +
         JSON.stringify(rideTypes, null, 4) +
         ";\n\n/** Valeurs de `TrackGroup` (ride/ted/TrackGroup.h). */\nexport const TRACK_GROUPS = " +
@@ -442,11 +454,28 @@ const pitchValue = new Map();
         pitchValue.set(m[1], i++);
     }
 }
+const rollEnum = /enum class VehicleRoll[^{]*\{([\s\S]*?)\};/.exec(anglesH)[1];
+const rollValue = new Map();
+{
+    let i = 0;
+    for (const line of rollEnum.split("\n")) {
+        const m = /^\s*(\w+)\s*(?:=\s*(\d+))?\s*,/.exec(line);
+        if (m?.[1] === "rollCount") break;
+        if (!m) continue;
+        if (m[2] !== undefined) i = Number(m[2]);
+        rollValue.set(m[1], i++);
+    }
+}
 const geometryCpp = readFileSync(join(src, "ride", "VehicleGeometry.cpp"), "utf8");
 const intList = (name) =>
     [.../* liste d'entiers d'un std::to_array */ new RegExp(`${name}\\s*=\\s*std::to_array[^(]*\\(\\{([\\s\\S]*?)\\}\\)`).exec(geometryCpp)[1].replace(/\/\/[^\n]*/g, "").matchAll(/-?\d+/g)].map((x) => Number(x[0]));
 const accelerationFromPitch = intList("kAccelerationFromPitch");
 const translationDistances = intList("kSubpositionTranslationDistances");
+const rollHorizontal = intList("kRollHorizontalComponent");
+if (rollHorizontal.length !== rollValue.size) throw new Error(`kRollHorizontalComponent : ${rollHorizontal.length} valeurs pour ${rollValue.size} roulis`);
+// GetGForces : composante x de kPitchToDirectionVectorInt32 (cosinus du tangage, × 2^31).
+const pitchCos = [...new RegExp("kPitchToDirectionVectorInt32\\s*=\\s*std::to_array[^(]*\\(\\{([\\s\\S]*?)\\}\\)").exec(geometryCpp)[1].replace(/\/\/[^\n]*/g, "").matchAll(/\{\s*(-?\d+)\s*,\s*(-?\d+)\s*\}/g)].map((x) => Number(x[1]));
+if (pitchCos.length !== pitchValue.size) throw new Error(`kPitchToDirectionVectorInt32 : ${pitchCos.length} valeurs pour ${pitchValue.size} tangages`);
 if (accelerationFromPitch.length !== pitchValue.size) throw new Error(`kAccelerationFromPitch : ${accelerationFromPitch.length} valeurs pour ${pitchValue.size} tangages`);
 
 const subposCpp = readFileSync(join(src, "ride", "VehicleSubpositionData.cpp"), "utf8");
@@ -457,7 +486,9 @@ for (const m of subposCpp.matchAll(/CREATE_VEHICLE_INFO\((\w+),\s*\{([\s\S]*?)\}
         [...m[2].matchAll(/\{\s*(-?\d+),\s*(-?\d+),\s*(-?\d+),\s*(\d+),\s*(\w+),\s*(\w+)\s*\}/g)].map((e) => {
             const pitch = pitchValue.get(e[5]);
             if (pitch === undefined) throw new Error(`Tangage inconnu : ${e[5]}`);
-            return [Number(e[1]), Number(e[2]), Number(e[3]), pitch];
+            const roll = rollValue.get(e[6]);
+            if (roll === undefined) throw new Error(`Roulis inconnu : ${e[6]}`);
+            return [Number(e[1]), Number(e[2]), Number(e[3]), pitch, roll];
         }),
     );
 }
@@ -476,8 +507,9 @@ defaultList.forEach((name, i) => {
         const mask = k ? (e[0] !== p[0] ? 1 : 0) | (e[1] !== p[1] ? 2 : 0) | (e[2] !== p[2] ? 4 : 0) : 0;
         return e[3] * 8 + mask;
     });
-    const t = (subpositions[type] ??= { steps: [], first: [], last: [] });
+    const t = (subpositions[type] ??= { steps: [], rolls: [], first: [], last: [], g: tedFactors.get(tedOrder[type]) ?? [0, 0] });
     t.steps[dir] = steps;
+    t.rolls[dir] = info.map((e) => e[4]);
     t.first[dir] = info[0].slice(0, 3);
     t.last[dir] = info[info.length - 1].slice(0, 3);
 });
@@ -486,12 +518,72 @@ mkdirSync(join(root, "data"), { recursive: true });
 writeFileSync(
     join(root, "data", "vehicle_subpositions.json"),
     JSON.stringify({
-        source: "VehicleSubpositionData.cpp (TrackVehicleInfoListDefault), VehicleGeometry.cpp",
+        source: "VehicleSubpositionData.cpp (TrackVehicleInfoListDefault), VehicleGeometry.cpp, TrackData.cpp (facteurs de G)",
         accelerationFromPitch,
+        pitchCos,
+        rollHorizontal,
         translationDistances,
         tracks: subpositions,
     }) + "\n",
 );
 writeFileSync(join(root, "data", "ride_start_piece.json"), JSON.stringify(rideTypes, null, 2) + "\n");
 
-console.log(`${Object.keys(actionArgs).length} actions, ${rideTypes.length} types d'attractions, ${Object.keys(subpositions).length} pièces avec sous-positions.`);
+// ---------------------------------------------------------------------------
+// 7. Voitures des objets d'attraction (SPEC 12.8, train réel) : masse, espacement et composition des trains
+// (RideObject::ReadJson : headCars → FrontCar/SecondCar/ThirdCar, tailCars → RearCar, 255 = aucune). Lu dans les
+// objets installés avec le jeu (objects.zip décompressé) ; les .parkobj sont des zip lus avec unzip s'il existe.
+// Clés : identifiant (rct2.ride.mft) et nom DAT (MFT, celui des .td6).
+// ---------------------------------------------------------------------------
+
+const objectRoots = [join(repo, "build", "usr", "local", "share", "openrct2", "object"), join(repo, "data", "object"), join(repo, "bin", "data", "object")];
+const objectRoot = objectRoots.find((d) => {
+    try {
+        return statSync(d).isDirectory();
+    } catch {
+        return false;
+    }
+});
+const rideVehicles = {};
+if (objectRoot) {
+    const { execFileSync } = await import("node:child_process");
+    for (const f of walk(objectRoot)) {
+        let text = null;
+        if (f.endsWith(".json")) text = readFileSync(f, "utf8");
+        else if (f.endsWith(".parkobj")) {
+            try {
+                text = execFileSync("unzip", ["-p", f, "object.json"], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] });
+            } catch {
+                continue;
+            }
+        }
+        if (!text) continue;
+        let obj;
+        try {
+            obj = JSON.parse(text.replace(/^﻿/, ""));
+        } catch {
+            continue;
+        }
+        if (obj.objectType !== "ride" || !obj.properties) continue;
+        const p = obj.properties;
+        const cars = (Array.isArray(p.cars) ? p.cars : p.cars ? [p.cars] : []).map((c) => ({ spacing: c.spacing ?? 0, carMass: c.mass ?? 0 }));
+        if (!cars.length) continue;
+        const head = Array.isArray(p.headCars) ? p.headCars : p.headCars !== undefined ? [p.headCars] : [];
+        const tail = Array.isArray(p.tailCars) ? p.tailCars : p.tailCars !== undefined ? [p.tailCars] : [];
+        const entry = {
+            vehicles: cars,
+            minCars: p.minCarsPerTrain ?? 1,
+            maxCars: p.maxCarsPerTrain ?? 1,
+            front: head[0] ?? 255,
+            second: head[1] ?? 255,
+            third: head[2] ?? 255,
+            rear: tail[0] ?? 255,
+            defaultCar: p.defaultCar ?? 0,
+        };
+        rideVehicles[obj.id] = entry;
+        const dat = /^[0-9A-Fa-f]{8}\|(.{8})\|/.exec(obj.originalId ?? "")?.[1].trim();
+        if (dat && !rideVehicles[dat]) rideVehicles[dat] = entry;
+    }
+}
+writeFileSync(join(root, "data", "ride_vehicles.json"), JSON.stringify(rideVehicles) + "\n");
+
+console.log(`${Object.keys(actionArgs).length} actions, ${rideTypes.length} types d'attractions, ${Object.keys(subpositions).length} pièces avec sous-positions, ${Object.keys(rideVehicles).length} entrées de voitures${objectRoot ? "" : " (objets du jeu introuvables)"}.`);

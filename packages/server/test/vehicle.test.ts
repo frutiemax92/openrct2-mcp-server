@@ -3,7 +3,7 @@ import { join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { DEFAULT_MODEL, mphToKmh, simulate, SpeedModels, type SpeedModel } from "../src/planners/speed.js";
 import { SegmentTable, compileMacros, endPose, rideTrackInfo, type PlannedPiece } from "../src/planners/track.js";
-import { flattenCircuit, simulateExact, vehicleTable, velocityToMph } from "../src/planners/vehicle.js";
+import { flattenCircuit, gForces, missingGEvaluators, simulateExact, vehicleTable, velocityToMph, mphToVelocity } from "../src/planners/vehicle.js";
 
 const table = SegmentTable.fromFile() as SegmentTable;
 const vt = vehicleTable()!;
@@ -108,5 +108,56 @@ describe("simulateur exact (Vehicle.TrackMotion.cpp)", () => {
         expect(simulate(DEFAULT_MODEL, table, pieces, 5, train)[0].exact).toBeUndefined();
         expect(simulate({ ...exactModel, energyOnly: true }, table, pieces, 5, train)[0].exact).toBeUndefined();
         expect(simulateExact([{ type: 9999, x: 0, y: 0, z: 0, direction: 0 }], { rideType: 51, train: { cars: 1, spacing: 0, mass: 1 } })).toBeNull();
+    });
+});
+
+describe("G prédits (Vehicle::GetGForces)", () => {
+    it("toutes les fonctions de facteur de G nommées par la table sont portées", () => {
+        expect(vt.hasGForces()).toBe(true);
+        expect(missingGEvaluators(vt)).toEqual([]);
+    });
+
+    it("GetGForces : 1 G à plat à l'arrêt, G latéraux = v × 98 / facteur", () => {
+        expect(gForces(vt, 0, 0, 0, 0, 0)).toEqual({ vert: 99, lat: 0 });
+        // Petit virage plat (facteur 59) à 40 mph : 728 177 × 98 / 59 × 10 >> 16.
+        const v = mphToVelocity(40);
+        expect(gForces(vt, 0, 0, 0, 59, v).lat).toBe(Math.floor((Math.trunc((v * 98) / 59) * 10) / 65536));
+        expect(gForces(vt, 0, 0, 0, -59, v).lat).toBeLessThan(0);
+    });
+
+    it("reproduit les G mesurés en jeu sur Lunar Launcher (latéraux, verticaux max et min) à 0,1 G près", () => {
+        const fx = JSON.parse(readFileSync(join(__dirname, "fixtures", "measured-coasters.json"), "utf8")) as {
+            rides: { name: string; rideType: number; train: typeof train; pieces: PlannedPiece[]; gForces?: { maxLatG: number; maxPosG: number; maxNegG: number } }[];
+        };
+        const rides = fx.rides.filter((r) => r.gForces);
+        expect(rides.length).toBeGreaterThan(0);
+        for (const r of rides) {
+            const ex = simulateExact(r.pieces, {
+                rideType: r.rideType,
+                train: { cars: r.train.cars, spacing: Math.round(r.train.carLength * 0x44180), mass: r.train.mass },
+                closed: true,
+                blockZ,
+            })!;
+            expect(ex.completed, r.name).toBe(true);
+            expect(Math.abs(ex.gForces!.maxLat / 100 - r.gForces!.maxLatG), r.name).toBeLessThan(0.1);
+            expect(Math.abs(ex.gForces!.maxPosVert / 100 - r.gForces!.maxPosG), r.name).toBeLessThan(0.1);
+            expect(Math.abs(ex.gForces!.maxNegVert / 100 - r.gForces!.maxNegG), r.name).toBeLessThan(0.1);
+        }
+    });
+
+    it("un petit virage plat pris vite dépasse 2,8 G latéraux ; incliné, il reste sous le seuil", () => {
+        const latOf = (banked: boolean) => {
+            const pieces = circuit([{ op: "launch", height: 8 }, { op: "turn", dir: "right", size: "small", banked }]);
+            const sim = simulate(exactModel, table, pieces, exactModel.stationSpeed, train);
+            const i = pieces.findIndex((p) => /QuarterTurn3Tiles$/.test(p.name ?? SegmentTable.nameOf(p.type)));
+            expect(i).toBeGreaterThan(0);
+            expect(mphToKmh(sim[i].vIn)).toBeGreaterThan(55);
+            return sim[i].gLat!;
+        };
+        const flat = latOf(false);
+        const banked = latOf(true);
+        expect(flat).toBeGreaterThan(2.8);
+        expect(banked).toBeLessThan(2.8);
+        expect(flat / banked).toBeGreaterThan(1.4);
     });
 });

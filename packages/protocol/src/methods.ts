@@ -167,8 +167,8 @@ export interface RegionTile {
     r?: number[];
     /** Hauteur max (niveau) des pièces d'attraction sur la tuile. */
     rh?: number;
-    /** Intervalles [base, dégagement] (niveaux) occupés par chaque pièce d'attraction sur la tuile (passerelles : trouver un créneau libre entre deux pièces à des hauteurs différentes). */
-    ri?: [number, number][];
+    /** Intervalles [base, dégagement, attraction] (niveaux) occupés par chaque pièce d'attraction sur la tuile (passerelles : trouver un créneau libre entre deux pièces à des hauteurs différentes ; piste qui passe sous ou au-dessus d'une autre attraction). */
+    ri?: [number, number, number?][];
     e?: RegionEntrance[];
     /** Nombre d'éléments de petite scénerie, grande scénerie, murs. */
     sc?: number;
@@ -744,6 +744,24 @@ export interface RideTrainResult {
     /** mass : Car.mass (voiture + visiteurs) ; spacing et carMass : RideObjectVehicle de la voiture. */
     cars: { mass: number; spacing: number; carMass: number }[];
     trains: number;
+    /** Voitures de l'objet et règle de composition (RideEntryGetVehicleAtPosition ; 255 = pas de voiture dédiée). */
+    object?: {
+        identifier: string;
+        vehicles: { spacing: number; carMass: number }[];
+        minCars: number;
+        maxCars: number;
+        front: number;
+        second: number;
+        third: number;
+        rear: number;
+        defaultCar: number;
+    };
+    /** Plus courte station en tuiles (RideGetSmallestStationLength), 0 sans station. */
+    stationTiles?: number;
+    /** RideMode de l'attraction. */
+    mode?: number;
+    /** Type d'attraction (masse maximale d'un train). */
+    rideType?: number;
 }
 
 export interface RatingScanParams {

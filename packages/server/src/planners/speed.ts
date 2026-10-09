@@ -29,11 +29,11 @@
 // donc rapporté à la masse du train de calage (massRef) : k2 effectif = k2 · massRef / masse.
 
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { PieceSample, TrackPieceInfo, TrackSegmentInfo } from "@openrct2-claude/protocol";
 import { RIDE_TYPES } from "@openrct2-claude/protocol";
-import { SegmentTable, STATION_TYPES, beginPose, endPose, samePose } from "./track.js";
-import { DISTANCE_PER_TILE, simulateExact, type ExactTrain } from "./vehicle.js";
+import { SegmentTable, STATION_TYPES, beginPose, blockBoundaries, endPose, samePose, type BlockBoundary } from "./track.js";
+import { DISTANCE_PER_TILE, simulateExact, vehicleTableFile, type ExactPieceSpeed, type ExactTrain } from "./vehicle.js";
 
 export interface SpeedModel {
     /** Gain de v² (mph²) par niveau de descente. */
@@ -155,6 +155,81 @@ export function trainShape(cars: { mass: number; spacing: number }[]): TrainShap
     return { cars: cars.length, carLength: length / cars.length, mass: cars.reduce((a, c) => a + c.mass, 0) };
 }
 
+/** Voitures d'un objet d'attraction et règle de composition (RideObject ; 255 = pas de voiture dédiée). */
+export interface TrainObject {
+    vehicles: { spacing: number; carMass: number }[];
+    minCars: number;
+    maxCars: number;
+    front: number;
+    second: number;
+    third: number;
+    rear: number;
+    defaultCar: number;
+}
+
+/** RideEntryGetVehicleAtPosition (Ride.cpp). */
+function carAt(o: TrainObject, numCars: number, position: number): { spacing: number; carMass: number } | undefined {
+    let i = o.defaultCar;
+    if (position === 0 && o.front !== 255) i = o.front;
+    else if (position === 1 && o.second !== 255) i = o.second;
+    else if (position === 2 && o.third !== 255) i = o.third;
+    else if (position === numCars - 1 && o.rear !== 255) i = o.rear;
+    return o.vehicles[i];
+}
+
+/** Modes à sections de bloc (Ride::isBlockSectioned) : marge de sécurité sur la longueur de station. */
+const BLOCK_SECTIONED_MODES = new Set([34, 36]);
+
+/**
+ * Train que le jeu créera pour cet objet (Ride::UpdateMaxVehicles) : le nombre de voitures voulu (proposedNumCarsPerTrain,
+ * maxCarsInTrain à la création ou ride_configure carsPerTrain), borné par la longueur de la plus courte station et la
+ * masse maximale du type (MaxMass << 8), voitures à vide. undefined si l'objet n'a pas de voiture utilisable.
+ */
+export function composeTrain(o: TrainObject, opts: { stationTiles: number; rideType?: number; mode?: number; wantedCars?: number }): TrainShape | undefined {
+    if (!o.vehicles.length || !opts.stationTiles) return undefined;
+    const rt = RIDE_TYPES.find((r) => r.rideType === opts.rideType);
+    const maxMass = (rt?.maxMass ?? 255) << 8;
+    const stationLength = opts.stationTiles * SPACING_PER_TILE - (opts.mode !== undefined && BLOCK_SECTIONED_MODES.has(opts.mode) ? 0x16b2a : 0);
+    const carsOf = (n: number) => Array.from({ length: n }, (_, i) => carAt(o, n, i));
+    let maxFit = 1;
+    for (let n = o.maxCars; n > 0; n--) {
+        const cars = carsOf(n);
+        if (cars.some((c) => !c)) continue;
+        const length = cars.reduce((a, c) => a + c!.spacing, 0);
+        const mass = cars.reduce((a, c) => a + c!.carMass, 0);
+        if (length <= stationLength && mass <= maxMass) {
+            maxFit = n;
+            break;
+        }
+    }
+    const minCars = Math.max(1, o.minCars);
+    const n = Math.min(Math.max(opts.wantedCars ?? o.maxCars, minCars), Math.max(maxFit, minCars));
+    const cars = carsOf(n);
+    if (cars.some((c) => !c)) return undefined;
+    return trainShape(cars.map((c) => ({ mass: c!.carMass, spacing: c!.spacing })));
+}
+
+let vehicleObjects: Record<string, TrainObject> | null | undefined;
+/** Voitures d'un objet d'attraction par identifiant ou nom DAT (data/ride_vehicles.json, tools/gen-tables.mjs). */
+export function rideVehicleObject(key: string): TrainObject | undefined {
+    if (vehicleObjects === undefined) {
+        const file = join(dirname(vehicleTableFile()), "ride_vehicles.json");
+        vehicleObjects = existsSync(file) ? (JSON.parse(readFileSync(file, "utf8")) as Record<string, TrainObject>) : null;
+    }
+    return vehicleObjects?.[key.trim()] ?? vehicleObjects?.[key.trim().toUpperCase()];
+}
+
+/**
+ * Train d'un design (.td6) : son objet de véhicule et son nombre de voitures, à vide. Objet inconnu : le train par
+ * défaut ramené à ce nombre de voitures.
+ */
+export function designTrain(td: { vehicleObject: string; carsPerTrain?: number; rideType: number }): TrainShape | undefined {
+    const o = rideVehicleObject(td.vehicleObject);
+    const composed = o && composeTrain(o, { stationTiles: Infinity, rideType: td.rideType, wantedCars: td.carsPerTrain || undefined });
+    if (composed) return composed;
+    return td.carsPerTrain ? { cars: td.carsPerTrain, carLength: DEFAULT_TRAIN.carLength, mass: (DEFAULT_TRAIN.mass / DEFAULT_TRAIN.cars) * td.carsPerTrain } : undefined;
+}
+
 /** Longueur du train en tuiles de piste. */
 export const trainLength = (t: TrainShape): number => t.cars * t.carLength;
 
@@ -184,6 +259,20 @@ export interface PieceSpeed {
     reached?: boolean;
     /** Vitesses issues du simulateur exact. */
     exact?: boolean;
+    /**
+     * G prédits de la tête du train sur la pièce (simulateur exact seulement, lissés comme les statistiques du jeu) :
+     * latéraux en valeur absolue, verticaux max et min, en G.
+     */
+    gLat?: number;
+    gVertMax?: number;
+    gVertMin?: number;
+}
+
+/** PieceSpeed d'une pièce du simulateur exact. */
+function fromExact(r: ExactPieceSpeed): PieceSpeed {
+    const out: PieceSpeed = { vIn: r.vIn, vOut: r.vOut, vMin: r.vMin, stall: r.stall, reached: r.reached, exact: true };
+    if (r.gLat !== undefined) Object.assign(out, { gLat: r.gLat, gVertMax: r.gVertMax, gVertMin: r.gVertMin });
+    return out;
 }
 
 export const mphToKmh = (v: number): number => Math.round(v * 1.609);
@@ -267,7 +356,19 @@ type SimPiece = TrackPieceInfo & { chain?: boolean; brakeSpeed?: number };
  * Vitesses le long d'une suite de pièces, à partir d'une vitesse d'entrée. Avec `train`, simule le train entier
  * (simulateTrain) ; sinon un train ponctuel de la masse de calage.
  */
-export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiece[], vStart: number, train?: TrainShape): PieceSpeed[] {
+export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiece[], vStart: number, train?: TrainShape, opts: { startPiece?: number } = {}): PieceSpeed[] {
+    const startPiece = opts.startPiece ?? 0;
+    if (startPiece > 0) {
+        // Tête du train sur startPiece, queue sur les pièces d'avant : seul le simulateur exact pose les voitures ainsi ;
+        // le modèle d'énergie repart du début de startPiece (pièces d'avant non atteintes).
+        const ex =
+            !model.energyOnly && model.rideType !== undefined
+                ? simulateExact(pieces, { rideType: model.rideType, train: exactTrain(train), liftHillSpeed: model.liftHillSpeed, rideMode: model.rideMode, vStartMph: vStart, startPiece, blockZ: (t) => table.get(t)?.elements[0]?.z ?? 0 })
+                : null;
+        if (ex) return ex.pieces.map(fromExact);
+        const before: PieceSpeed[] = pieces.slice(0, startPiece).map(() => ({ vIn: 0, vOut: 0, vMin: 0, stall: false, reached: false }));
+        return [...before, ...simulate(model, table, pieces.slice(startPiece), vStart, train)];
+    }
     if (!model.energyOnly && model.rideType !== undefined && pieces.length) {
         const first = table.get(pieces[0].type);
         const last = table.get(pieces[pieces.length - 1].type);
@@ -279,7 +380,7 @@ export function simulate(model: SpeedModel, table: SegmentTable, pieces: SimPiec
         const run = shift > 0 ? [...pieces.slice(shift), ...pieces.slice(0, shift)] : pieces;
         const ex = simulateExact(run, { rideType: model.rideType, train: exactTrain(train), liftHillSpeed: model.liftHillSpeed, rideMode: model.rideMode, vStartMph: vStart, closed, blockZ: (t) => table.get(t)?.elements[0]?.z ?? 0 });
         if (ex) {
-            const out = ex.pieces.map((r) => ({ vIn: r.vIn, vOut: r.vOut, vMin: r.vMin, stall: r.stall, reached: r.reached, exact: true }));
+            const out = ex.pieces.map(fromExact);
             return shift > 0 ? pieces.map((_, j) => out[(j - shift + n) % n]) : out;
         }
     }
@@ -675,4 +776,95 @@ export function brakeRuns(table: SegmentTable, pieces: TrackPieceInfo[]): BrakeR
         if (name === "blockBrakes" || name === "diagBlockBrakes" || beforeStation) out.push({ index: i, tiles: runEndingAt(i), beforeStation });
     });
     return out;
+}
+
+export interface BlockSpacing {
+    /** Longueur de piste prise en compte (tuiles) et section moyenne (longueur / sections). */
+    totalTiles: number;
+    meanSectionTiles: number;
+    /** Freins de bloc consécutifs (sans autre limite entre eux) plus proches que `minTiles`. */
+    close: { first: number; second: number; tiles: number; minTiles: number }[];
+    /**
+     * Circuit fermé avec freins de bloc dont le plat d'arrivée en gare (pièces de niveau qui précèdent la station) n'a
+     * pas de frein de bloc : freins droits de ce plat, dernière limite avant la station et piste qui l'en sépare.
+     */
+    noStationBlock?: { brakes: number[]; lastBoundary?: BlockBoundary; tilesToStation: number };
+}
+
+/** Pièce de niveau : ni montée, ni descente, ni bosse (les virages à plat ou inclinés en font partie). */
+function isLevel(seg: TrackSegmentInfo): boolean {
+    return seg.beginZ === seg.endZ && segPeakZ(seg) === seg.beginZ;
+}
+
+/**
+ * Placement des freins de bloc (COASTER_REFERENCE P9) : deux freins de bloc qui se suivent de près n'ajoutent presque
+ * rien au débit (le train suivant attend quand même la plus longue section), alors que le frein de bloc d'arrivée en
+ * gare, à la fin de la ligne de freins, sépare la station du reste. Seuil « trop proches » : max(2 × longueur du
+ * train, moitié de la section moyenne). Circuit ouvert : `expectedTiles` (longueur visée, référence) sert de longueur
+ * totale, sinon seule la longueur du train compte.
+ */
+export function blockSpacing(
+    table: SegmentTable,
+    pieces: (TrackPieceInfo & { chain?: boolean })[],
+    opts: { closed: boolean; trainTiles?: number; expectedTiles?: number },
+): BlockSpacing {
+    const n = pieces.length;
+    const len = (i: number) => segLengthTiles(table.require(pieces[((i % n) + n) % n].type));
+    const bounds = blockBoundaries(pieces);
+    const built = pieces.reduce((t, _, i) => t + len(i), 0);
+    const totalTiles = opts.closed ? built : Math.max(built, opts.expectedTiles ?? 0);
+    const sections = Math.max(bounds.length, 1);
+    const meanSectionTiles = totalTiles / sections;
+    const relative = opts.closed || opts.expectedTiles !== undefined ? meanSectionTiles / 2 : 0;
+    const minTiles = Math.max(2 * (opts.trainTiles ?? 0), relative);
+    // Arrivée de chaque station : plat (pièces de niveau) qui la précède, à rebours, et dernière limite avant elle.
+    const tilesBetween = (from: number, to: number) => {
+        let t = 0;
+        for (let i = from + 1; ((i % n) + n) % n !== to; i++) t += len(i);
+        return t;
+    };
+    const near = 2 * (opts.trainTiles ?? 4);
+    const approachBlocks = new Set<number>();
+    const approaches = !opts.closed
+        ? []
+        : bounds
+              .filter((b) => b.kind === "station")
+              .map((station) => {
+                  const brakes: number[] = [];
+                  let block: number | undefined;
+                  for (let k = 1; k < n; k++) {
+                      const i = (((station.index - k) % n) + n) % n;
+                      const name = SegmentTable.nameOf(pieces[i].type);
+                      if (STATION_TYPES.has(pieces[i].type) || !isLevel(table.require(pieces[i].type))) break;
+                      if (name === "blockBrakes" || name === "diagBlockBrakes") {
+                          block = i;
+                          break;
+                      }
+                      if (BRAKE_NAMES.has(name)) brakes.unshift(i);
+                  }
+                  const at = bounds.indexOf(station);
+                  const prev = bounds[(at - 1 + bounds.length) % bounds.length];
+                  const tilesToStation = prev === station ? 0 : tilesBetween(prev.index, station.index);
+                  // Frein de bloc collé à la station (moins de 2 trains de piste, pente comprise) : arrivée couverte aussi.
+                  if (block === undefined && prev.kind === "block" && tilesToStation <= near) block = prev.index;
+                  if (block !== undefined) approachBlocks.add(block);
+                  // Deux stations à la suite : la seconde est déjà séparée par la première.
+                  const covered = block !== undefined || prev.kind === "station";
+                  return { covered, brakes, lastBoundary: prev === station ? undefined : prev, tilesToStation };
+              });
+    const close: BlockSpacing["close"] = [];
+    for (let k = 1; k < bounds.length; k++) {
+        const a = bounds[k - 1];
+        const b = bounds[k];
+        // Deux freins de bloc sur l'arrivée en gare (file d'attente au déchargement, Atomizer, Medusa…) : voulu.
+        if (a.kind !== "block" || b.kind !== "block" || approachBlocks.has(b.index)) continue;
+        const tiles = tilesBetween(a.index, b.index) + len(b.index);
+        if (tiles < minTiles) close.push({ first: a.index, second: b.index, tiles, minTiles });
+    }
+    let noStationBlock: BlockSpacing["noStationBlock"];
+    if (bounds.some((b) => b.kind === "block") && approaches.length && !approaches.some((a) => a.covered)) {
+        const { brakes, lastBoundary, tilesToStation } = approaches[0];
+        noStationBlock = { brakes, lastBoundary, tilesToStation };
+    }
+    return { totalTiles, meanSectionTiles, close, noStationBlock };
 }

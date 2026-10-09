@@ -380,6 +380,8 @@ export interface TrackEnv {
     rideId: number;
     sandbox: boolean;
     mapSize: { x: number; y: number };
+    /** Dégagement du véhicule du circuit construit (rideClearance) ; défaut : celui du twister. */
+    clearance?: number;
 }
 
 /** Hauteur du point le plus haut de la surface (unités monde). */
@@ -391,17 +393,31 @@ export function groundTopZ(t: RegionTile): number {
 }
 
 /** Raison pour laquelle un bloc de piste ne peut pas être posé à cet endroit, ou null (contrôle côté serveur, prudent). */
-export function blockProblem(env: TrackEnv, e: { x: number; y: number; z: number }): string | null {
+export function blockProblem(env: TrackEnv, e: { x: number; y: number; z: number; cz?: number; vertical?: boolean }): string | null {
     if (e.x < 1 || e.y < 1 || e.x >= env.mapSize.x - 1 || e.y >= env.mapSize.y - 1) return "hors carte";
     const t = env.get(e.x, e.y);
     if (!t) return "hors zone lue";
     if (!(t.o & 3) && !env.sandbox) return "terrain non possédé";
     if (e.z < groundTopZ(t)) return "sous le terrain";
-    for (const p of t.p ?? []) if (Math.abs(p.l * 16 - e.z) < 48) return "chemin";
+    for (const p of t.p ?? []) if (Math.abs(p.l * 16 - e.z) < 48) return p.q ? "file d'attente" : "chemin";
     for (const en of t.e ?? []) if (Math.abs(en.l * 16 - e.z) < 64) return "entrée/sortie";
-    if (t.r?.some((r) => r !== env.rideId) && e.z < ((t.rh ?? t.h) + 3) * 16) return "autre attraction";
+    if (t.r?.some((r) => r !== env.rideId) && otherRideClash(env, t, e)) return "autre attraction";
     if (t.lg) return "grande scénerie";
     return null;
+}
+
+/**
+ * Le bloc chevauche-t-il une pièce d'une autre attraction sur la tuile ? Même règle que MapCanConstructWithClearAt :
+ * intervalles [base, dégagement[ qui se chevauchent (quarts de tuile ignorés). Une piste peut donc passer sous une
+ * autre (son dégagement finit sous la base de l'autre) ou au-dessus (sa base est au-dessus du dégagement de l'autre,
+ * qui inclut déjà la hauteur de son véhicule). Ancien plugin sans `ri` : refus sous le sommet `rh`, comme avant.
+ */
+function otherRideClash(env: TrackEnv, t: RegionTile, e: { x: number; y: number; z: number; cz?: number; vertical?: boolean }): boolean {
+    const [a0, a1] = blockSpan({ ...e, cz: e.cz ?? 0 }, env.clearance ?? DEFAULT_CLEARANCE);
+    if (!t.ri?.length) return a0 < ((t.rh ?? t.h) + 3) * 16;
+    // Intervalle sans attraction (ancien plugin) : compté comme une autre attraction ; les blocs du circuit lui-même
+    // sont contrôlés par Occupancy.
+    return t.ri.some(([b0, b1, r]) => r !== env.rideId && a0 < b1 * 16 && a1 > b0 * 16);
 }
 
 // ---------------------------------------------------------------------------
@@ -455,7 +471,9 @@ export function findTransition(
 
 /**
  * Suite de pièces droites non inclinées qui part de `fromSlope` et finit à plat avec un dénivelé exact `dz`
- * (montées, descentes). Minimise le nombre de pièces.
+ * (montées, descentes). Minimise l'emprise en tuiles, puis le nombre de pièces, et ne repasse jamais à plat
+ * en cours de route : sans ça, les pièces LongBase (4 tuiles pour une seule pièce) donnaient une chute en
+ * escalier (60° → plat → 60°) deux fois plus longue qu'une chute franche (« Black Widow Ultra » de Haiku).
  */
 export function slopeRun(
     table: SegmentTable,
@@ -468,33 +486,35 @@ export function slopeRun(
         (s) => s.beginBank === 0 && s.endBank === 0 && (dz >= 0 ? s.endZ >= s.beginZ : s.endZ <= s.beginZ),
     );
     const key = (slope: number, z: number) => `${slope}|${z}`;
-    const prev = new Map<string, { k: string; seg: TrackSegmentInfo } | null>([[key(fromSlope, 0), null]]);
-    let frontier = [{ slope: fromSlope, z: 0 }];
     const goal = key(PITCH.flat, dz);
-    for (let depth = 0; depth < 80 && frontier.length; depth++) {
-        const next: { slope: number; z: number }[] = [];
-        for (const st of frontier) {
-            for (const seg of pieces) {
-                if (seg.beginSlope !== st.slope) continue;
-                const z = st.z + seg.endZ - seg.beginZ;
-                if (dz >= 0 ? z > dz : z < dz) continue;
-                const k = key(seg.endSlope, z);
-                if (prev.has(k)) continue;
-                prev.set(k, { k: key(st.slope, st.z), seg });
-                if (k === goal) {
-                    const out: TrackSegmentInfo[] = [];
-                    let cur: string | undefined = k;
-                    while (cur && prev.get(cur)) {
-                        const p = prev.get(cur) as { k: string; seg: TrackSegmentInfo };
-                        out.unshift(p.seg);
-                        cur = p.k;
-                    }
-                    return out;
-                }
-                next.push({ slope: seg.endSlope, z });
-            }
+    // Dijkstra sur (pente, dénivelé) ; coût = tuiles × 100 + pièces.
+    const best = new Map<string, number>([[key(fromSlope, 0), 0]]);
+    const prev = new Map<string, { k: string; seg: TrackSegmentInfo }>();
+    const open: { slope: number; z: number; cost: number }[] = [{ slope: fromSlope, z: 0, cost: 0 }];
+    while (open.length) {
+        let i = 0;
+        for (let j = 1; j < open.length; j++) if (open[j].cost < open[i].cost) i = j;
+        const st = open.splice(i, 1)[0];
+        const sk = key(st.slope, st.z);
+        if (st.cost > (best.get(sk) ?? Infinity)) continue;
+        if (sk === goal) {
+            const out: TrackSegmentInfo[] = [];
+            for (let cur = prev.get(sk); cur; cur = prev.get(cur.k)) out.unshift(cur.seg);
+            return out;
         }
-        frontier = next;
+        for (const seg of pieces) {
+            if (seg.beginSlope !== st.slope) continue;
+            const z = st.z + seg.endZ - seg.beginZ;
+            if (dz >= 0 ? z > dz : z < dz) continue;
+            // Pas de palier à mi-course : à plat seulement au départ ou à l'arrivée.
+            if (seg.endSlope === PITCH.flat && z !== dz) continue;
+            const k = key(seg.endSlope, z);
+            const cost = st.cost + seg.elements.length * 100 + 1;
+            if (cost >= (best.get(k) ?? Infinity)) continue;
+            best.set(k, cost);
+            prev.set(k, { k: sk, seg });
+            open.push({ slope: seg.endSlope, z, cost });
+        }
     }
     return null;
 }
@@ -640,6 +660,57 @@ export function inversionCandidates(kind: InversionKind, dir: TurnSide, size: "s
 }
 
 /** Inversions (genre × taille) que ce type d'attraction peut construire. */
+/** Premiers éléments essayés depuis le bout d'un circuit ouvert : s'ils échouent tous, la piste ne peut plus repartir. */
+const EXIT_PROBES: Macro[][] = [
+    [{ op: "straight", length: 1 }],
+    [{ op: "climb", height: 3 }],
+    ...(["left", "right"] as const).flatMap((dir) => (["small", "medium"] as const).map((size): Macro[] => [{ op: "turn", dir, size }])),
+];
+
+/**
+ * Impasse au bout d'un circuit ouvert (« Black Widow Loop », Haiku, 8 octobre 2026 : la première chute finissait face à
+ * une file d'attente, la recherche essayait 228 éléments sans une fermeture et conseillait d'élargir bounds). Renvoie
+ * l'obstacle le plus fréquent quand aucun élément de départ (droite, montée, virages) ne passe, sinon null.
+ * `occ` ne doit pas contenir la dernière pièce posée (tuiles partagées avec la suivante).
+ */
+export function exitProblem(
+    table: SegmentTable,
+    ride: RideTrackInfo,
+    pose: TrackPose,
+    occ: Occupancy,
+    env: TrackEnv,
+    bounds?: TrackBounds,
+    zMin = 16,
+): string | null {
+    const seen = new Map<string, number>();
+    let tried = 0;
+    for (const probe of EXIT_PROBES) {
+        const c = compileMacros(table, ride, pose, probe);
+        if (c.errors.length || !c.pieces.length) continue;
+        tried++;
+        let why: string | null = null;
+        const o = occ.clone();
+        let prev: TrackBlock[] = [];
+        for (const p of c.pieces) {
+            const el = pieceElements(p, table.require(p.type));
+            const hit = o.conflict(el);
+            if (hit) why = `(${hit.x},${hit.y}) niveau ${hit.z / 16} : piste du circuit`;
+            for (const e of el) {
+                if (why) break;
+                const cause = e.z < zMin ? "trop bas" : (blockProblem(env, e) ?? (bounds ? boundsProblem(bounds, e) : null));
+                if (cause) why = `(${e.x},${e.y}) niveau ${e.z / 16} : ${cause}`;
+            }
+            if (why) break;
+            o.add(prev);
+            prev = el;
+        }
+        if (!why) return null;
+        seen.set(why, (seen.get(why) ?? 0) + 1);
+    }
+    if (!tried) return null;
+    return [...seen.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
 export function availableInversions(table: SegmentTable, ride: RideTrackInfo): string[] {
     const out: string[] = [];
     for (const kind of INVERSION_KINDS) {
@@ -904,6 +975,29 @@ export interface BlockSections {
     boundaries: string;
 }
 
+/** Limite de section de bloc : début de station, frein de bloc, fin de lift avec chaîne ou câble (indice de pièce). */
+export interface BlockBoundary {
+    kind: "station" | "block" | "lift";
+    index: number;
+}
+
+/** Limites de section dans l'ordre du circuit (voir `blockSections`). */
+export function blockBoundaries(pieces: (TrackPieceInfo & { chain?: boolean })[]): BlockBoundary[] {
+    const marks: BlockBoundary[] = [];
+    pieces.forEach((p, i) => {
+        if (STATION_TYPES.has(p.type)) {
+            // Une station = une suite de pièces de station (la première pièce du circuit peut suivre la dernière).
+            const prev = pieces[(i - 1 + pieces.length) % pieces.length];
+            if (!STATION_TYPES.has(prev.type)) marks.push({ kind: "station", index: i });
+        } else if (BLOCK_BRAKE_TYPES.has(p.type)) {
+            marks.push({ kind: "block", index: i });
+        } else if ((p.chain && LIFT_TOP_TYPES.has(p.type)) || p.type === CABLE_LIFT_TYPE) {
+            marks.push({ kind: "lift", index: i });
+        }
+    });
+    return marks;
+}
+
 /**
  * Sections de bloc comme le jeu les compte : TrackPlaceAction incrémente ride.numBlockBrakes pour chaque frein de
  * bloc, chaque fin de lift (up25ToFlat, up60ToFlat avec chaîne) et chaque câble ; Ride.cpp permet alors
@@ -911,30 +1005,15 @@ export interface BlockSections {
  * tourner 3 ou 4 trains avec leurs seuls sommets de lift, en mode à sections réglé à la main.
  */
 export function blockSections(pieces: (TrackPieceInfo & { chain?: boolean })[]): BlockSections {
-    let stations = 0;
-    let blockBrakes = 0;
-    let liftTops = 0;
-    const marks: string[] = [];
-    pieces.forEach((p, i) => {
-        if (STATION_TYPES.has(p.type)) {
-            // Une station = une suite de pièces de station (la première pièce du circuit peut suivre la dernière).
-            const prev = pieces[(i - 1 + pieces.length) % pieces.length];
-            if (!STATION_TYPES.has(prev.type)) {
-                stations++;
-                marks.push(`station@${i}`);
-            }
-        } else if (BLOCK_BRAKE_TYPES.has(p.type)) {
-            blockBrakes++;
-            marks.push(`block@${i}`);
-        } else if ((p.chain && LIFT_TOP_TYPES.has(p.type)) || p.type === CABLE_LIFT_TYPE) {
-            liftTops++;
-            marks.push(`lift@${i}`);
-        }
-    });
+    const marks = blockBoundaries(pieces);
+    const count = (k: BlockBoundary["kind"]) => marks.filter((m) => m.kind === k).length;
+    let stations = count("station");
+    const blockBrakes = count("block");
+    const liftTops = count("lift");
     // Circuit entièrement en station : compté une fois.
     if (stations === 0 && pieces.some((p) => STATION_TYPES.has(p.type))) {
         stations = 1;
-        marks.unshift("station@0");
+        marks.unshift({ kind: "station", index: 0 });
     }
     const sections = stations + blockBrakes + liftTops;
     return {
@@ -944,9 +1023,82 @@ export function blockSections(pieces: (TrackPieceInfo & { chain?: boolean })[]):
         sections,
         autoBlockMode: blockBrakes > 0,
         maxTrains: Math.min(Math.max(sections - 1, 1), MAX_TRAINS_PER_RIDE),
-        boundaries: marks.join(", "),
+        boundaries: marks.map((m) => `${m.kind}@${m.index}`).join(", "),
     };
 }
+
+/** Pièces qui hissent ou lancent le train : chaîne, câble, lancement motorisé, booster. */
+const PROPULSION_TYPES: ReadonlySet<number> = new Set(
+    ["cableLiftHill", "poweredLift", "booster", "diagBooster"].map((n) => (TRACK_ELEM_TYPES as Record<string, number>)[n]).filter((t) => t !== undefined),
+);
+
+/** Frein de bloc refusé par `blockBrakesBeforeLift`. */
+export interface EarlyBlockBrake {
+    index: number;
+    /** Piste entre la sortie de la station et le frein, frein exclu (tuiles). */
+    gapTiles: number;
+    /** Frein au pied du lift, refusé seulement parce que le train n'y tient pas : longueur exigée (tuiles). */
+    needTiles?: number;
+}
+
+/**
+ * Freins de bloc posés entre la sortie de la station et le premier lift. Une section de bloc ne sert qu'après le
+ * premier lift : la station tient déjà le train jusqu'à ce que le lift soit libre, et un frein de bloc à plat avant le
+ * lift arrête le train sans élan. Le jeu refuse le frein collé à la station ; un plat intercalé le fait accepter,
+ * d'où le contrôle côté serveur.
+ *
+ * Permis : le frein de bloc au pied du lift (la pièce suivante est la chaîne), qui fait attendre un train de plus
+ * (Soul Stealer, Spruce Goose : 5 à 7 trains), si le train arrêté, tête sur le frein, tient en entier hors de la
+ * station : piste entre la station et le frein ≥ `trainTiles` (à défaut, la longueur de la station, où tout train
+ * tient). Sans `table`, cette exception est fermée. Aussi permis : un frein de bloc suivi d'une seconde station avant
+ * tout lift (il la protège, Dream Chariots) ; un circuit lancé depuis la station (`stationLaunch`, modes 2, 3, 23,
+ * 35, 36), qui n'a pas de lift.
+ */
+export function blockBrakesBeforeLift(
+    pieces: (TrackPieceInfo & { chain?: boolean })[],
+    opts: { stationLaunch?: boolean; table?: SegmentTable; trainTiles?: number } = {},
+): EarlyBlockBrake[] {
+    if (opts.stationLaunch) return [];
+    const n = pieces.length;
+    const s = pieces.findIndex((p) => STATION_TYPES.has(p.type));
+    if (s < 0) return [];
+    const at = (i: number) => pieces[((i % n) + n) % n];
+    const isStation = (i: number) => STATION_TYPES.has(at(i).type);
+    const tiles = (i: number) => (opts.table ? Math.max(opts.table.get(at(i).type)?.length ?? 32, 1) / 32 : 0);
+    let i = s;
+    while (i < n && isStation(i)) i++;
+    // Première station (qui peut chevaucher la fin de la liste sur un circuit fermé) : pièces et longueur.
+    const firstStation = new Set<number>();
+    let stationTiles = 0;
+    for (let k = 1; k <= n && isStation(i - k); k++) {
+        firstStation.add((((i - k) % n) + n) % n);
+        stationTiles += tiles(i - k);
+    }
+    const need = opts.trainTiles ?? stationTiles;
+    const out: EarlyBlockBrake[] = [];
+    let gap = 0;
+    // Circuit fermé : la suite peut reprendre au début de la liste. Revenir à la première station (circuit ouvert ou
+    // sans lift) laisse les freins rencontrés refusés ; une autre station les rend légitimes.
+    for (let k = 0; k < n - 1; k++, i++) {
+        const p = at(i);
+        if (STATION_TYPES.has(p.type)) {
+            if (firstStation.has(((i % n) + n) % n)) break;
+            return [];
+        }
+        if (p.chain || PROPULSION_TYPES.has(p.type)) break;
+        if (BLOCK_BRAKE_TYPES.has(p.type)) {
+            const next = k + 1 < n - 1 ? at(i + 1) : undefined;
+            const liftFoot = !!next && (!!(next as { chain?: boolean }).chain || PROPULSION_TYPES.has(next.type));
+            const fits = !!opts.table && gap >= need - 1e-6;
+            if (!(liftFoot && fits)) out.push({ index: ((i % n) + n) % n, gapTiles: Math.round(gap * 10) / 10, needTiles: liftFoot && opts.table ? Math.round(need * 10) / 10 : undefined });
+        }
+        gap += tiles(i);
+    }
+    return out;
+}
+
+/** Modes lancés depuis la station (RideMode) : pas de lift, la station sert de départ propulsé. */
+export const STATION_LAUNCH_MODES: ReadonlySet<number> = new Set([2, 3, 23, 35, 36]);
 
 /** Une inversion compte une fois : la pièce qui fait passer à l'envers (ou la boucle entière). */
 const startsInversion = (s: TrackSegmentInfo): boolean => (!!s.flags?.isInversion || s.endBank === ROLL.upsideDown) && s.beginBank !== ROLL.upsideDown;
