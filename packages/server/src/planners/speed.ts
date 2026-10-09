@@ -709,6 +709,32 @@ export function elementMinSpeed(table: SegmentTable, pieces: TrackPieceInfo[], s
     return v;
 }
 
+/**
+ * Vitesse d'entrée minimale (km/h) d'une pièce inclinée à plat ou en montée. Designs RCT2 simulés (9 octobre 2026) :
+ * 1 621 virages inclinés à plat, 1 % sous 21 km/h, 2 % sous 25 (presque tous bobsleigh ou train de la mine) ; les
+ * pièces inclinées en descente (virage incliné qui plonge au sortir du lift) passent à 7 km/h, la pente fait la vitesse.
+ */
+export const BANK_MIN_KMH = 20;
+
+/**
+ * Pièces inclinées (ni à l'envers ni inversion) qui ne descendent pas, abordées sous BANK_MIN_KMH : un virage incliné
+ * au sommet du lift, où le train roule à la vitesse de la chaîne (Haiku, 9 octobre 2026). `from` : première pièce
+ * jugée (celles d'avant sont déjà posées).
+ */
+export function slowBanks(table: SegmentTable, pieces: TrackPieceInfo[], sim: PieceSpeed[], from = 0): { index: number; name: string; kmh: number }[] {
+    const out: { index: number; name: string; kmh: number }[] = [];
+    for (let i = from; i < pieces.length; i++) {
+        const s = sim[i];
+        const seg = table.get(pieces[i].type);
+        if (!s || !seg || s.reached === false || STATION_TYPES.has(pieces[i].type)) continue;
+        const banked = (seg.beginBank !== 0 || seg.endBank !== 0) && seg.beginBank !== 15 && seg.endBank !== 15 && !seg.flags?.isInversion;
+        if (!banked || seg.endZ < seg.beginZ) continue;
+        const kmh = s.vIn * 1.609;
+        if (kmh < BANK_MIN_KMH) out.push({ index: i, name: SegmentTable.nameOf(pieces[i].type), kmh: Math.round(kmh) });
+    }
+    return out;
+}
+
 /** Fenêtres d'entrée par genre d'élément, calculées avec le modèle sur des circuits de référence (designs RCT2). */
 export function speedWindows(
     model: SpeedModel,

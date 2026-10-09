@@ -83,6 +83,8 @@ import {
     modelError,
     mphToKmh,
     simulate,
+    BANK_MIN_KMH,
+    slowBanks,
     speedWindows,
     forRide,
     DEFAULT_TRAIN,
@@ -106,9 +108,10 @@ import {
     shelterPoints,
     type RatingInputs,
 } from "../planners/ratings.js";
-import { searchSection, defaultVocabulary } from "../planners/search.js";
+import { arrivalFor, searchSection, defaultVocabulary, type SearchResult } from "../planners/search.js";
+import { retreatOptions, roomAhead } from "../planners/backtrack.js";
 import { findSites, type Site } from "../planners/site.js";
-import { LENGTH_MAX, LENGTH_MIN, STEEP_MIN, applyMods, checkTarget, firstDrop, grownFootprint, firstDropProblems, referenceTarget, steepCount, targetLevers, type ReferenceMods, type ReferenceTarget } from "../planners/target.js";
+import { DROP_MIN, LENGTH_MAX, LENGTH_MIN, STEEP_MIN, applyMods, checkTarget, firstDrop, grownFootprint, firstDropProblems, referenceTarget, steepCount, targetLevers, type ReferenceMods, type ReferenceTarget } from "../planners/target.js";
 import { circuitFingerprint, elementSequence, gSections, ratingGaps, speedProfile, topLevers, type CoasterMeasure, type StoredTerm } from "../planners/compare.js";
 import type { InverseOp } from "../state/journal.js";
 import { MeasureStore } from "../state/measures.js";
@@ -873,6 +876,12 @@ function inversionNote(table: SegmentTable, ride: RideTrackInfo): string {
         : ` Aucune inversion sur ce type de piste (${ride.name}).`;
 }
 
+/** Part de timeMs donnée à la recherche depuis le bout actuel quand le repli est permis (le reste : les replis). */
+const BACKTRACK_MAIN_SHARE = 0.4;
+/** Poche au bout d'un plan ouvert : place libre minimale (tuiles), et part de la piste qui reste à poser. */
+const POCKET_MIN_TILES = 30;
+const POCKET_SHARE = 0.5;
+
 function exitBlockedHint(st: CoasterState): string {
     let lastChain = -1;
     st.pieces.forEach((p, i) => {
@@ -885,7 +894,7 @@ function exitBlockedHint(st: CoasterState): string {
             : `coaster_undo { ride: ${st.rideId}, count: <pièces du dernier élément> } retire le dernier élément`;
     return (
         `Ce n'est ni bounds, ni la référence, ni timeMs : l'obstacle nommé dans exitBlocked est juste devant le bout du circuit. ${undo} ; ` +
-        "refais-le pour qu'il débouche sur des tuiles libres (chute plus courte ou plus longue, virage au sommet avant de descendre, autre direction), " +
+        "refais-le pour qu'il débouche sur des tuiles libres (chute moins haute qui finit au-dessus des chemins, puis virage ; jamais de virage incliné au sommet, où le train roule au pas), " +
         "ou libère la tuile (path_remove pour un chemin ou une file d'attente), puis relance coaster_search_section avec la même référence."
     );
 }
@@ -981,14 +990,14 @@ interface ClosureOutcome {
     attempts: number;
     rejected: { piece: string; tile: TileXY; message: string }[];
     /** Pièces de fermeture écartées pour leurs G prédits (virage plat pris trop vite) avant d'en trouver une autre. */
-    gRejected?: { piece: string; tile: TileXY; latG: number }[];
+    gRejected?: { piece: string; tile: TileXY; latG?: number; kmh?: number }[];
 }
 
 /**
- * Pièces d'une fermeture candidate dont les G latéraux prédits dépassent le seuil de pénalité (circuit entier simulé :
- * la vitesse dépend de tout ce qui précède).
+ * Pièces d'une fermeture candidate dont les G latéraux prédits dépassent le seuil de pénalité, ou inclinées et abordées
+ * sous BANK_MIN_KMH (circuit entier simulé : la vitesse dépend de tout ce qui précède).
  */
-type ClosureGCheck = (closure: PlannedPiece[]) => { piece: PlannedPiece; latG: number }[];
+type ClosureGCheck = (closure: PlannedPiece[]) => { piece: PlannedPiece; latG?: number; kmh?: number }[];
 
 async function closeCircuit(
     ctx: ToolContext,
@@ -1023,7 +1032,8 @@ async function closeCircuit(
             fallback ??= res.pieces;
             for (const b of bad) {
                 forbidden.add(pieceKey(b.piece));
-                if (gRejected.length < 5) gRejected.push({ piece: b.piece.name, tile: { x: b.piece.x, y: b.piece.y }, latG: Math.round(b.latG * 100) / 100 });
+                if (gRejected.length < 5)
+                    gRejected.push({ piece: b.piece.name, tile: { x: b.piece.x, y: b.piece.y }, ...(b.latG !== undefined ? { latG: Math.round(b.latG * 100) / 100 } : { kmh: b.kmh }) });
             }
             continue;
         }
@@ -1074,7 +1084,7 @@ const zMacro = z.discriminatedUnion("op", [
         op: z.literal("turn"),
         dir: zSide,
         size: z.enum(["small", "medium", "large"]).optional().describe("small = 3 tuiles (lent), medium = 5 tuiles (défaut), large = par la diagonale (huitièmes, rapide)."),
-        banked: z.boolean().optional(),
+        banked: z.boolean().optional().describe("Virage incliné, pour les virages rapides. À plat ou en montée, refusé sous 20 km/h (sommet du lift : sans banked, ou slope 'down')."),
         quarters: z.number().int().min(1).max(4).optional().describe("Nombre de quarts de tour (défaut 1 = 90°)."),
         slope: z
             .enum(["flat", "up", "down", "steep_up", "steep_down"])
@@ -1639,6 +1649,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         : "Change l'ordre ou le sens des virages, monte plus haut pour passer au-dessus, ou choisis une zone dégagée (get_region_map).",
                 });
             }
+            let pocket: string | null = null;
             // Plan ouvert qui finit face à un obstacle : refusé tout de suite, la suite (recherche, fermeture) ne pourrait pas en partir.
             if (!args.close && compiled.pieces.length && !samePose(compiled.end, st.stationStart)) {
                 const blocked = exitProblem(st.table, st.ride, compiled.end, occ.clone(), env, bounds);
@@ -1649,6 +1660,40 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                             "Change la fin du plan pour qu'elle débouche sur des tuiles libres : élément plus court ou plus long, virage avant la descente, autre direction ; " +
                             "ou libère la tuile (path_remove pour un chemin ou une file d'attente). Élargir bounds n'y change rien si l'obstacle est dedans.",
                     });
+                // Arrivée en gare sans place pour y entrer (« Black Widow Vortex XL », Haiku, 9 octobre 2026 : station à 4 tuiles du
+                // bord de bounds, trois recherches de 120 s vouées à « A* introuvable ») : refusé avant de poser le début.
+                const placed = occ.clone();
+                for (const p of compiled.pieces) placed.add(pieceElements(p, st.table.require(p.type)));
+                const arrival = arrivalFor({
+                    table: st.table,
+                    ride: st.ride,
+                    goal: st.stationStart,
+                    prefix: [...st.pieces, ...compiled.pieces],
+                    minTrains: target?.maxTrains,
+                    closureCatalog: searchCatalog(st.table, st.ride, { steep: true }),
+                    occupancy: placed,
+                    env,
+                    bounds,
+                    zMin: Math.max(16, Math.min(st.stationStart.z, compiled.end.z, ...st.pieces.map((p) => p.z), ...compiled.pieces.map((p) => p.z)) - 16 * 4),
+                });
+                if (arrival.blocked)
+                    toolError("OBSTRUCTED", `Le circuit ne pourra pas rentrer en gare : l'arrivée (${arrival.brakes} brakes + block_brakes pour ${target?.maxTrains ?? 1} train(s)) est bloquée, ${arrival.blocked}.`, {
+                        details: { approachBlocked: arrival.blocked, approachBrakes: arrival.brakes, bounds },
+                        hint:
+                            "Rien n'est posé. Il faut derrière la station les freins d'arrivée plus 3 tuiles libres (la place d'un virage) dans bounds : recule bounds de ce côté, " +
+                            "ou ride_demolish puis coaster_create plus loin du bord (ou station dans l'autre sens). Ce n'est ni le début du plan ni la référence.",
+                    });
+                // Poche (« Black Widow Sidewinder », Haiku, 9 octobre 2026) : un élément peut partir, mais la place libre à ce
+                // niveau est trop petite pour la piste qui reste ; la recherche de fin échouera (COASTER_SPACE 7 septdecies).
+                const left = target ? Math.ceil(target.lengthTiles * LENGTH_MIN) - layoutStats(st.table, [...st.pieces, ...compiled.pieces]).lengthTiles : 0;
+                const need = Math.max(POCKET_MIN_TILES, Math.ceil(left * POCKET_SHARE));
+                const room = roomAhead(env, placed, compiled.end, bounds, need);
+                if (room < need)
+                    pocket =
+                        `POCHE : au bout du plan (${compiled.end.x},${compiled.end.y}) niveau ${compiled.end.z / 16}, seulement ${room} tuiles libres atteignables à ce niveau` +
+                        `${bounds ? " dans bounds" : ""} (chemins, files d'attente, autres attractions, circuit) pour ${left > 0 ? `~${left} tuiles de piste qui restent` : "la fin du circuit"}. ` +
+                        "La fin ne pourra pas tourner au sol : finis la chute plus haut (au-dessus des chemins : 3 niveaux au moins) puis tourne vers la zone libre. " +
+                        "coaster_search_section le fait seule (backtrack) : elle renvoie undo et un plan qui refait la chute.";
             }
             if (compiled.pieces.length) {
                 const q = await runBatch(ctx, compiled.pieces.map((p) => placeOp(st.rideId, st.rideType, p)), true);
@@ -1670,7 +1715,9 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 const gCheck: ClosureGCheck = (link) => {
                     const off = st.pieces.length + compiled.pieces.length;
                     const whole = simulate(model, st.table, [...st.pieces, ...compiled.pieces, ...link], model.stationSpeed, train);
-                    return link.map((piece, i) => ({ piece, latG: whole[off + i]?.reached === false ? 0 : (whole[off + i]?.gLat ?? 0) })).filter((x) => x.latG > LATERAL_G_PENALTY);
+                    const lat = link.map((piece, i) => ({ piece, latG: whole[off + i]?.reached === false ? 0 : (whole[off + i]?.gLat ?? 0) })).filter((x) => x.latG > LATERAL_G_PENALTY);
+                    const slow = slowBanks(st.table, [...st.pieces, ...compiled.pieces, ...link], whole, off).map((b) => ({ piece: link[b.index - off], kmh: b.kmh }));
+                    return [...lat, ...slow];
                 };
                 closure = await closeCircuit(ctx, st, env, planEnd, occ, { inversions: args.allowInversions, diagonals: args.allowDiagonals, maxPieces: args.maxClosurePieces, bounds, gCheck });
                 if (!closure.pieces && args.dryRun) {
@@ -1729,11 +1776,29 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const sim = whole.slice(st.pieces.length);
             const vCursor = st.pieces.length ? whole[st.pieces.length - 1].vOut : model.stationSpeed;
             styleWarnings.push(...speedWarnings(st.table, all, sim, elementWindows(ctx, st.table, model), args.plan as Macro[]));
+            // Virage incliné abordé au pas (sommet du lift, Haiku 9 octobre 2026) : refusé à la pose, plan ou fermeture.
+            const slow = slowBanks(st.table, [...st.pieces, ...all], whole, st.pieces.length);
+            if (slow.length) {
+                const pieceAt = (i: number) => all[i - st.pieces.length];
+                const where = (i: number) => {
+                    const p = pieceAt(i);
+                    return p.macro !== undefined ? `macro ${p.macro} (${(args.plan as Macro[])[p.macro]?.op ?? "?"})` : "fermeture";
+                };
+                const msg = `VIRAGE INCLINÉ TROP LENT : ${slow
+                    .slice(0, 3)
+                    .map((b) => `${where(b.index)}, ${b.name} en (${pieceAt(b.index).x},${pieceAt(b.index).y}) abordé à ${b.kmh} km/h`)
+                    .join(" ; ")}. Une pièce inclinée à plat ou en montée demande au moins ${BANK_MIN_KMH} km/h (designs RCT2 : 1 % en dessous).`;
+                const hint =
+                    "Au sommet du lift, le train roule à la vitesse de la chaîne : tourne sans inclinaison (turn sans banked), ou commence la chute dans le virage " +
+                    "(turn { banked: true, slope: 'down' }, la pente donne la vitesse), ou place le virage incliné plus loin, après une descente.";
+                if (!args.dryRun) toolError("INVALID_PARAMS", `Plan refusé : ${msg}`, { details: { slowBanks: slow }, hint });
+                styleWarnings.unshift(`REFUSÉ À LA POSE : ${msg} ${hint}`);
+            }
             if (closure?.gRejected?.length) {
-                const list = closure.gRejected.map((g) => `${g.piece} en (${g.tile.x},${g.tile.y}) ${g.latG.toFixed(2)} G`).join(", ");
+                const list = closure.gRejected.map((g) => `${g.piece} en (${g.tile.x},${g.tile.y}) ${g.latG !== undefined ? `${g.latG.toFixed(2)} G` : `incliné à ${g.kmh} km/h`}`).join(", ");
                 styleWarnings.push(
-                    closure.pieces && !sim.slice(compiled.pieces.length).some((x) => (x.gLat ?? 0) > LATERAL_G_PENALTY)
-                        ? `Fermeture : ${list} écartés (G latéraux > 2,8) ; une autre route a été retenue.`
+                    closure.pieces && !slow.length && !sim.slice(compiled.pieces.length).some((x) => (x.gLat ?? 0) > LATERAL_G_PENALTY)
+                        ? `Fermeture : ${list} écartés (G latéraux > 2,8 ou virage incliné sous ${BANK_MIN_KMH} km/h) ; une autre route a été retenue.`
                         : `Fermeture : aucune route sans virage à plus de 2,8 G latéraux (${list}). Termine le plan plus lentement (montée ou freins avant la fin) ou avec un virage incliné vers la station.`,
                 );
             }
@@ -1743,6 +1808,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             }
             // Repartie des freins de bloc, dès la pose (circuit ouvert compris) et en tête : un train qui recule s'écrase
             // sur le suivant, et les avertissements peuvent être tronqués.
+            if (pocket) styleWarnings.unshift(pocket);
             styleWarnings.unshift(...blockBrakeRestartWarnings([...st.pieces, ...all], (slice, v, startPiece) => simulate(model, st.table, slice, v, train, { startPiece })));
             // Placement des freins de bloc : trop proches dès la pose (longueur visée de la référence), arrivée en gare à la fermeture.
             {
@@ -1771,7 +1837,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 return result({
                     budget: BUDGET.write * 3,
                     response: {
-                        summary: `[simulation] ${compiled.pieces.length} pièce(s) de plan${closure ? (closure.pieces ? ` + ${closure.pieces.length} de fermeture` : ", fermeture introuvable") : ""}.`,
+                        summary: `[simulation] ${compiled.pieces.length} pièce(s) de plan${closure ? (closure.pieces ? ` + ${closure.pieces.length} de fermeture` : ", fermeture introuvable") : ""}.${pocket ? ` ${pocket}` : ""}`,
                         plan: compactPieces(compiled.pieces),
                         closure: closure?.pieces ? compactPieces(closure.pieces) : null,
                         planEnd: describePose(planEnd),
@@ -1812,7 +1878,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             return result({
                 budget: BUDGET.write * 3,
                 response: {
-                    summary: `${done.length}/${all.length} pièce(s) posée(s) sur ${st.name}, coût ${placed.totalCost} ; circuit ${after.closed ? "fermé" : "ouvert"} (${after.pieces.length} pièces).`,
+                    summary: `${done.length}/${all.length} pièce(s) posée(s) sur ${st.name}, coût ${placed.totalCost} ; circuit ${after.closed ? "fermé" : "ouvert"} (${after.pieces.length} pièces).${pocket ? ` ${pocket}` : ""}`,
                     plan: compactPieces(compiled.pieces),
                     closure: closure?.pieces ? compactPieces(closure.pieces) : null,
                     closed: after.closed,
@@ -1867,6 +1933,13 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 timeMs: z.number().int().min(2000).max(120_000).default(90_000),
                 results: z.number().int().min(1).max(10).default(3),
                 allowBelowReference: z.boolean().default(false).describe("Permet reference: null sur un circuit qui garde une référence (seulement si l'utilisateur a abandonné la ressemblance)."),
+                backtrack: z
+                    .boolean()
+                    .default(true)
+                    .describe(
+                        "Sans fin depuis le bout actuel (poche entre chemins et attractions, impasse), recule : retire la fin (jamais le lift), refait la première chute moins haute si elle est retirée, et cherche de nouveau. " +
+                            "La réponse donne alors undo (pièces à retirer avec coaster_undo) et un plan qui commence par la nouvelle chute. Garde 40 % de timeMs pour le bout actuel.",
+                    ),
             },
             readOnly: true,
         },
@@ -1892,84 +1965,138 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                 toolError("INVALID_PARAMS", `Début de circuit refusé : ${dropProblems.join(" ; ")}.`, {
                     hint: `coaster_undo jusqu'au sommet du lift, puis refais la première chute comme ${target!.name} (coaster_describe { ride } de la référence, sequence) avant de chercher la fin.`,
                 });
-            // Profondeur par défaut : ~5 tuiles par macro, assez pour la longueur qui reste (lift long, Black Widow XL).
-            const maxDepth = args.maxDepth ?? Math.min(30, Math.max(16, Math.ceil((minTiles - prefixTiles) / 5)));
             const minInversions = args.minInversions ?? (target?.inversions || undefined);
             if (minInversions && !availableInversions(st.table, st.ride).length) toolError("INVALID_PARAMS", `${st.ride.name} n'a aucune inversion : minInversions impossible.`);
-            const res = searchSection({
-                table: st.table,
-                ride: st.ride,
-                prefix: st.pieces,
-                start: st.cursor,
-                goal: st.stationStart,
-                occupancy: st.occupancy,
-                env,
-                bounds,
-                closureCatalog: searchCatalog(st.table, st.ride, { steep: true }),
-                speedOf: (pieces, vStart) => simulate(model, st.table, pieces, vStart, train),
-                simulateCircuit: (pieces) => simulate(model, st.table, pieces, model.stationSpeed, train),
-                simulateFrom: (pieces, v, startPiece) => simulate(model, st.table, pieces, v, train, { startPiece }),
-                judge: (pieces, sim, macros) => speedWarnings(st.table, pieces, sim, windows, macros),
-                vStart: prefixSim.length ? prefixSim[prefixSim.length - 1].vOut : model.stationSpeed,
-                minTiles,
-                maxTiles: target ? Math.floor(target.lengthTiles * LENGTH_MAX) : prefixTiles + 400,
-                minTrains: target?.maxTrains,
-                minSteep: target?.steepPieces ? Math.ceil(target.steepPieces * STEEP_MIN) : undefined,
-                minInversions,
-                vocabulary: (args.vocabulary as Macro[][] | undefined) ?? defaultVocabulary({ inversions: args.inversions || minInversions ? availableInversions(st.table, st.ride).map((s) => s.split("(")[0]) : [] }),
-                beamWidth: args.beamWidth,
-                maxDepth,
-                timeMs: args.timeMs,
-                results: args.results,
-                zMin,
-                stationLaunch: STATION_LAUNCH_MODES.has(st.mode),
-                trainTiles: train ? trainLength(train) : undefined,
-            });
-            const ref = target ? { lengthTiles: target.lengthTiles, stackedTiles: target.stackedTiles, liftShared: target.liftShared, density: target.density, coverage: Math.round(target.coverage * 100), maxTrains: target.maxTrains, heightLevels: target.heightLevels, ...(target.topSpeedKmh !== undefined ? { topSpeedKmh: target.topSpeedKmh } : {}), ...(target.mods ? { mods: target.mods } : {}) } : undefined;
+            const runSearch = (prefix: typeof st.pieces, start: TrackPose, occupancy: Occupancy, timeMs: number) => {
+                const pTiles = layoutStats(st.table, prefix).lengthTiles;
+                const pSim = simulate(model, st.table, prefix, model.stationSpeed, train);
+                return searchSection({
+                    table: st.table,
+                    ride: st.ride,
+                    prefix,
+                    start,
+                    goal: st.stationStart!,
+                    occupancy,
+                    env,
+                    bounds,
+                    closureCatalog: searchCatalog(st.table, st.ride, { steep: true }),
+                    speedOf: (pieces, vStart) => simulate(model, st.table, pieces, vStart, train),
+                    simulateCircuit: (pieces) => simulate(model, st.table, pieces, model.stationSpeed, train),
+                    simulateFrom: (pieces, v, startPiece) => simulate(model, st.table, pieces, v, train, { startPiece }),
+                    judge: (pieces, sim, macros) => speedWarnings(st.table, pieces, sim, windows, macros),
+                    vStart: pSim.length ? pSim[pSim.length - 1].vOut : model.stationSpeed,
+                    minTiles,
+                    maxTiles: target ? Math.floor(target.lengthTiles * LENGTH_MAX) : prefixTiles + 400,
+                    minTrains: target?.maxTrains,
+                    minSteep: target?.steepPieces ? Math.ceil(target.steepPieces * STEEP_MIN) : undefined,
+                    minInversions,
+                    vocabulary: (args.vocabulary as Macro[][] | undefined) ?? defaultVocabulary({ inversions: args.inversions || minInversions ? availableInversions(st.table, st.ride).map((s) => s.split("(")[0]) : [] }),
+                    beamWidth: args.beamWidth,
+                    // Profondeur par défaut : ~5 tuiles par macro, assez pour la longueur qui reste (lift long, Black Widow XL).
+                    maxDepth: args.maxDepth ?? Math.min(30, Math.max(16, Math.ceil((minTiles - pTiles) / 5))),
+                    timeMs,
+                    results: args.results,
+                    zMin,
+                    stationLaunch: STATION_LAUNCH_MODES.has(st.mode),
+                    trainTiles: train ? trainLength(train) : undefined,
+                });
+            };
             // Plus haut / plus rapide (reference.taller / faster) : variantes jugées sur le circuit entier, début compris.
-            const judged = res.candidates.map((c) => {
-                const whole = [...st.pieces, ...c.pieces, ...c.closure];
-                const height = c.layout.maxLevel - c.layout.minLevel;
-                const top = target?.topSpeedKmh !== undefined ? topSpeed(whole) : undefined;
-                const misses = [
-                    target?.mods?.taller && height < target.heightLevels ? `écart de hauteur ${height} niveaux contre ${target.heightLevels}` : "",
-                    target?.mods?.faster && top !== undefined && top < target.topSpeedKmh! ? `vitesse de pointe ${Math.round(top)} km/h contre ${Math.round(target.topSpeedKmh!)}` : "",
-                ].filter(Boolean);
-                return { c, height, top, misses };
-            });
-            const kept = judged.filter((j) => !j.misses.length);
-            const modsMiss = !kept.length && judged.length ? judged[0].misses.join(" ; ") : null;
-            const variants = kept.map(({ c, height, top }, i) => ({
-                rank: i + 1,
-                score: Math.round(c.score),
-                heightLevels: height,
-                ...(top !== undefined ? { topSpeedKmh: Math.round(top) } : {}),
-                lengthTiles: c.layout.lengthTiles,
-                footprint: c.layout.footprint.size,
-                density: c.layout.density,
-                coveragePct: Math.round(c.space.coverage * 100),
-                stackedTiles: c.space.stackedTiles,
-                liftShared: c.liftShared,
-                isolated: c.space.isolated.length,
-                maxTrains: c.layout.blocks.maxTrains,
-                minKmh: c.minKmh,
-                sBends: c.sBends,
-                warnings: c.warnings,
-                sequence: compactPieces([...c.pieces, ...c.closure]),
-                plan: [...c.macros, ...c.closure.map((p) => ({ op: "piece", name: p.name, ...(p.chain ? { chain: true } : {}) }))],
-            }));
+            const toVariants = (prefix: typeof st.pieces, found: SearchResult, lead: Macro[] = []) => {
+                const judged = found.candidates.map((c) => {
+                    const whole = [...prefix, ...c.pieces, ...c.closure];
+                    const height = c.layout.maxLevel - c.layout.minLevel;
+                    const top = target?.topSpeedKmh !== undefined ? topSpeed(whole) : undefined;
+                    const misses = [
+                        target?.mods?.taller && height < target.heightLevels ? `écart de hauteur ${height} niveaux contre ${target.heightLevels}` : "",
+                        target?.mods?.faster && top !== undefined && top < target.topSpeedKmh! ? `vitesse de pointe ${Math.round(top)} km/h contre ${Math.round(target.topSpeedKmh!)}` : "",
+                    ].filter(Boolean);
+                    return { c, height, top, misses };
+                });
+                const kept = judged.filter((j) => !j.misses.length);
+                const miss = !kept.length && judged.length ? judged[0].misses.join(" ; ") : null;
+                const list = kept.map(({ c, height, top }, i) => ({
+                    rank: i + 1,
+                    score: Math.round(c.score),
+                    heightLevels: height,
+                    ...(top !== undefined ? { topSpeedKmh: Math.round(top) } : {}),
+                    lengthTiles: c.layout.lengthTiles,
+                    footprint: c.layout.footprint.size,
+                    density: c.layout.density,
+                    coveragePct: Math.round(c.space.coverage * 100),
+                    stackedTiles: c.space.stackedTiles,
+                    liftShared: c.liftShared,
+                    isolated: c.space.isolated.length,
+                    maxTrains: c.layout.blocks.maxTrains,
+                    minKmh: c.minKmh,
+                    sBends: c.sBends,
+                    warnings: c.warnings,
+                    sequence: compactPieces([...c.pieces, ...c.closure]),
+                    plan: [...lead, ...c.macros, ...c.closure.map((p) => ({ op: "piece", name: p.name, ...(p.chain ? { chain: true } : {}) }))],
+                }));
+                return { list, miss, count: judged.length };
+            };
+            const t0 = Date.now();
+            // Repli (COASTER_SPACE 7 septdecies) : une part du temps est gardée pour reculer si le bout est une poche.
+            const mainMs = args.backtrack ? Math.max(2000, Math.round(args.timeMs * BACKTRACK_MAIN_SHARE)) : args.timeMs;
+            const res = runSearch(st.pieces, st.cursor!, st.occupancy, mainMs);
+            const first = toVariants(st.pieces, res);
+            let variants = first.list;
+            const modsMiss = first.miss;
+            const judged = { length: first.count };
+            let retreat: { undo: number; label: string; macros: Macro[]; tried: number } | null = null;
+            let retreatTried = 0;
+            if (!variants.length && !modsMiss && !res.approachBlocked && args.backtrack) {
+                const options = retreatOptions(st.table, st.ride, st.pieces, env, st.occupancy.clearance, {
+                    bounds,
+                    zMin,
+                    dropMin: target?.firstDrop ? Math.floor(target.firstDrop.height * DROP_MIN) : undefined,
+                }).filter((o) => !(target && !args.allowBelowReference && firstDropProblems(target, firstDrop(st.table, o.prefix)).length));
+                // Deux tours : chaque repli a d'abord une courte part (une hauteur sans issue peut épuiser son faisceau
+                // lentement), puis ceux arrêtés par le temps se partagent le reste.
+                let pending = options;
+                const tried = new Set<number>();
+                for (let round = 0; round < 2 && pending.length && !retreat; round++) {
+                    const again: typeof options = [];
+                    for (const [i, o] of pending.entries()) {
+                        const left = args.timeMs - (Date.now() - t0);
+                        if (left < 2000) break;
+                        tried.add(options.indexOf(o));
+                        const share = round === 0 ? left / (2 * (pending.length - i)) : left / (pending.length - i);
+                        const r = runSearch(o.prefix, o.start, o.occupancy, Math.max(2000, Math.round(share)));
+                        const v = toVariants(o.prefix, r, o.macros);
+                        if (v.list.length) {
+                            variants = v.list.map((x) => ({ ...x, undo: o.undo }));
+                            retreat = { undo: o.undo, label: o.label, macros: o.macros, tried: tried.size };
+                            break;
+                        }
+                        if (r.timedOut && !v.miss) again.push(o);
+                    }
+                    pending = again;
+                }
+                retreatTried = tried.size;
+            }
+            const ref = target ? { lengthTiles: target.lengthTiles, stackedTiles: target.stackedTiles, liftShared: target.liftShared, density: target.density, coverage: Math.round(target.coverage * 100), maxTrains: target.maxTrains, heightLevels: target.heightLevels, ...(target.topSpeedKmh !== undefined ? { topSpeedKmh: target.topSpeedKmh } : {}), ...(target.mods ? { mods: target.mods } : {}) } : undefined;
+            const firstFail = res.exitBlocked
+                ? `le bout du circuit est une impasse (${res.exitBlocked})`
+                : `${res.closures} fermetures tentées${Object.keys(res.rejected).length ? `, écartées : ${Object.entries(res.rejected).map(([k, n]) => `${k} ${n}`).join(", ")}` : ""}`;
             return result({
                 budget: BUDGET.write * 3,
                 response: {
-                    summary: variants.length
+                    summary: retreat
+                        ? `REPLI NÉCESSAIRE : aucune fin depuis le bout actuel (${firstFail}). En retirant ${retreat.undo} pièce(s) (${retreat.label}) : ${variants.length} variante(s) ; meilleure : ${variants[0].lengthTiles} tuiles de piste, ${variants[0].stackedTiles} empilées, ${variants[0].footprint}. ` +
+                          `Fais : 1) coaster_undo { ride: ${st.rideId}, count: ${retreat.undo} } ; 2) coaster_build_plan { ride: ${st.rideId}, plan: variants[0].plan, close: true } (le plan commence par la nouvelle chute).`
+                        : variants.length
                         ? `${variants.length} variante(s) en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures) ; meilleure : ${variants[0].stackedTiles} tuiles empilées, ${variants[0].lengthTiles} tuiles de piste, ${variants[0].footprint}.`
                         : modsMiss
                           ? `${judged.length} fin(s) de circuit trouvée(s), toutes écartées : ${modsMiss} (${target!.name}). Le début du circuit (lift, première chute) fixe la hauteur et la vitesse : refais-le.`
                           : res.exitBlocked
-                          ? `Recherche impossible : le bout du circuit est une impasse, aucun élément ne peut en partir (${res.exitBlocked}).`
+                          ? `Recherche impossible : le bout du circuit est une impasse, aucun élément ne peut en partir (${res.exitBlocked})${retreatTried ? ` ; ${retreatTried} repli(s) essayé(s) sans fin non plus` : ""}.`
                           : res.approachBlocked
                           ? `Recherche impossible : l'arrivée en gare (${res.approachBrakes ?? 0} brakes + block_brakes devant la station, imposée pour ${target?.maxTrains ?? 1} train(s)) est bloquée en ${res.approachBlocked}.`
-                          : `Aucune fin de circuit trouvée en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures tentées${Object.keys(res.rejected).length ? `, écartées : ${Object.entries(res.rejected).map(([k, n]) => `${k} ${n}`).join(", ")}` : ""}).`,
+                          : `Aucune fin de circuit trouvée en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures tentées${Object.keys(res.rejected).length ? `, écartées : ${Object.entries(res.rejected).map(([k, n]) => `${k} ${n}`).join(", ")}` : ""})${retreatTried ? ` ; ${retreatTried} repli(s) essayé(s) (chute moins haute, fin retirée), sans fin non plus` : ""}.`,
+                    ...(retreat ? { undo: retreat.undo, retreat: retreat.label } : {}),
+                    ...(args.backtrack && !variants.length && !modsMiss && !res.approachBlocked ? { retreatsTried: retreatTried } : {}),
                     ...(res.exitBlocked ? { exitBlocked: res.exitBlocked } : {}),
                     ...(res.approachBlocked ? { approachBlocked: res.approachBlocked } : {}),
                     ...(res.midBlocks ? { midBlocks: res.midBlocks } : {}),
@@ -1978,7 +2105,12 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     bounds: bounds ?? null,
                     reference: ref,
                     variants,
-                    next_hints: variants.length
+                    next_hints: retreat
+                        ? [
+                              `coaster_undo { ride: ${st.rideId}, count: ${retreat.undo} } (retire la fin qui mène à la poche ; rien d'autre à défaire)`,
+                              `coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, dryRun: true } puis sans dryRun ; ensuite coaster_test.`,
+                          ]
+                        : variants.length
                         ? [`coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, dryRun: true } puis sans dryRun ; ensuite coaster_test et coaster_compare.`]
                         : modsMiss
                           ? [
@@ -1989,7 +2121,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                           : res.approachBlocked
                           ? [
                                 "Ce n'est ni la référence ni le nombre de trains : la tuile nommée dans approachBlocked, derrière la station, est prise. " +
-                                    "Recule bounds derrière la station (au moins train + 2 tuiles) ou libère la tuile (piste du début, chemin, file d'attente), puis relance avec la même référence.",
+                                    "Recule bounds derrière la station (freins d'arrivée + 3 tuiles au moins, la place d'un virage pour y entrer) ou libère la tuile (piste du début, chemin, file d'attente), puis relance avec la même référence. Si bounds ne peut pas reculer (terrain, autre attraction), ride_demolish puis coaster_create plus loin du bord, ou station dans l'autre sens.",
                             ]
                           : [
                                 "Élargis bounds, augmente timeMs ou beamWidth, ou raccourcis le début (coaster_undo) pour laisser de la place. Garde la référence. Si bounds ne peut pas grandir (autres attractions, chemins), coaster_find_site trouve un site vide de la bonne taille, lac compris : ride_demolish puis coaster_create là-bas." +
@@ -2114,6 +2246,19 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const problems = checkPieces(st, env, st.cursor, planned, st.occupancy);
             if (problems.length) {
                 toolError("OBSTRUCTED", `${problems[0].piece} (pièce ${problems[0].index}) en (${problems[0].tile.x},${problems[0].tile.y}) : ${problems[0].message}.`, { details: { problems: problems.slice(0, 5) } });
+            }
+            // Pièce inclinée abordée au pas : même refus que coaster_build_plan.
+            {
+                const model = forRide(speedModels(ctx).get(st.rideType), st);
+                const whole = simulate(model, st.table, [...st.pieces, ...planned], model.stationSpeed, await rideTrain(ctx, st.rideId));
+                const slow = slowBanks(st.table, [...st.pieces, ...planned], whole, st.pieces.length);
+                if (slow.length) {
+                    const b = slow[0];
+                    toolError("INVALID_PARAMS", `Pièce ${b.index - st.pieces.length} ${b.name} abordée à ${b.kmh} km/h : une pièce inclinée à plat ou en montée demande au moins ${BANK_MIN_KMH} km/h.`, {
+                        details: { slowBanks: slow },
+                        hint: "Au sommet du lift, le train roule à la vitesse de la chaîne : prends le virage sans inclinaison, commence la descente avant d'incliner, ou incline plus loin après une descente.",
+                    });
+                }
             }
             const r = await runBatch(ctx, planned.map((p) => placeOp(st.rideId, st.rideType, p)), args.dryRun);
             const okCount = args.dryRun ? planned.length : r.firstFailureIndex ?? planned.length;

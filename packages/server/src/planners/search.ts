@@ -10,7 +10,7 @@
 // sont fournis par l'appelant.
 
 import type { TrackPieceInfo, TrackSegmentInfo } from "@openrct2-claude/protocol";
-import type { PieceSpeed } from "./speed.js";
+import { slowBanks, type PieceSpeed } from "./speed.js";
 import { spaceProfile, type SpaceProfile } from "./space.js";
 import { BLOCK_BRAKE_NAMES, RESTART_WINDOW, TAIL_CONTEXT, blockBrakeRestartWarnings } from "./stall.js";
 import {
@@ -23,6 +23,7 @@ import {
     compileMacros,
     exitProblem,
     layoutStats,
+    leadInProblem,
     pieceElements,
     pieceEndingAt,
     planClosure,
@@ -285,6 +286,53 @@ function approachPieces(table: SegmentTable, ride: RideTrackInfo, goal: TrackPos
 }
 
 /**
+ * Arrivée en gare imposée par les trains (`brakes` freins droits + frein de bloc devant la station) et sa place :
+ * pièces d'arrivée dans bounds et libres, puis assez de place derrière pour y entrer (`leadInProblem`). `occ` contient
+ * l'arrivée ; `target` est la pose où la fin du circuit doit la rejoindre ; `blocked` dit pourquoi aucune fin ne peut y
+ * arriver (contrôlé par coaster_build_plan dès le début du circuit, et par searchSection avant le faisceau).
+ */
+export function arrivalFor(input: {
+    table: SegmentTable;
+    ride: RideTrackInfo;
+    goal: TrackPose;
+    prefix: Piece[];
+    minTrains?: number;
+    approachBrakes?: number;
+    closureCatalog: TrackSegmentInfo[];
+    occupancy: Occupancy;
+    env: TrackEnv;
+    bounds?: TrackBounds;
+    zMin?: number;
+}): { approach: PlannedPiece[]; target: TrackPose; occ: Occupancy; brakes: number; blocked?: string } {
+    const { table } = input;
+    const needBlock = blockSections(input.prefix).maxTrains < (input.minTrains ?? 1);
+    const brakes = input.approachBrakes ?? (needBlock ? 2 : 0);
+    const occ = input.occupancy.clone();
+    let approach: PlannedPiece[] = [];
+    let target = input.goal;
+    if (needBlock || input.approachBrakes) {
+        const a = approachPieces(table, input.ride, input.goal, brakes);
+        const why = !a
+            ? "pièces de frein indisponibles"
+            : a
+                  .flatMap((p) => pieceElements(p, table.require(p.type)))
+                  .map((e) => {
+                      const cause = occ.conflict([e]) ? "piste" : (blockProblem(input.env, e) ?? (input.bounds ? boundsProblem(input.bounds, e) : null));
+                      return cause && `(${e.x},${e.y}) niveau ${e.z / 16} : ${cause}`;
+                  })
+                  .find((x) => x);
+        if (!a || why) return { approach, target, occ, brakes, blocked: why ?? "pièces de frein impossibles devant la station" };
+        approach = a;
+        target = beginPose(a[0], table.require(a[0].type));
+        for (const p of a) occ.add(pieceElements(p, table.require(p.type)));
+    }
+    // Pas la place d'entrer dans l'arrivée (bord de bounds, terrain, piste juste derrière) : toute fermeture A* échouerait.
+    const leadIn = leadInProblem(input.closureCatalog, target, occ, input.env, input.bounds, input.zMin);
+    if (leadIn) return { approach, target, occ, brakes, blocked: `entrée de l'arrivée en (${target.x},${target.y}) : aucune pièce n'y mène, ${leadIn}` };
+    return { approach, target, occ, brakes };
+}
+
+/**
  * Cherche les meilleures fins de circuit. Le faisceau garde `beamWidth` branches par profondeur (une par pose, la
  * mieux notée) ; chaque branche dont la longueur permet de fermer est refermée par A* (sans chaîne) jusqu'à l'arrivée
  * imposée, et le circuit complet est simulé : refusé s'il cale, noté sinon sur l'empilement, la couverture et le style.
@@ -317,40 +365,22 @@ export function searchSection(input: SearchInput): SearchResult {
     }
     const minTrains = input.minTrains ?? 1;
     const prefixBlocks = blockSections(input.prefix);
-    const needBlock = prefixBlocks.maxTrains < minTrains;
-    const brakes = input.approachBrakes ?? (needBlock ? 2 : 0);
 
     // Arrivée imposée, réservée dans l'occupation avant toute branche.
-    const occ0 = input.occupancy.clone();
-    let approach: PlannedPiece[] = [];
-    let target = input.goal;
-    if (needBlock || input.approachBrakes) {
-        const a = approachPieces(table, input.ride, input.goal, brakes);
-        const why = !a
-            ? "pièces de frein indisponibles"
-            : a
-                  .flatMap((p) => pieceElements(p, table.require(p.type)))
-                  .map((e) => {
-                      const cause = occ0.conflict([e]) ? "piste" : (blockProblem(input.env, e) ?? (input.bounds ? boundsProblem(input.bounds, e) : null));
-                      return cause && `(${e.x},${e.y}) niveau ${e.z / 16} : ${cause}`;
-                  })
-                  .find((x) => x);
-        if (!a || why)
-            return {
-                candidates: [],
-                expansions: 0,
-                closures: 0,
-                elapsedMs: elapsed(),
-                timedOut: false,
-                approachBlocked: why ?? "pièces de frein impossibles devant la station",
-                approachBrakes: brakes,
-                midBlocks: 0,
-                rejected: {},
-            };
-        approach = a;
-        target = beginPose(a[0], table.require(a[0].type));
-        for (const p of a) occ0.add(pieceElements(p, table.require(p.type)));
-    }
+    const arrival = arrivalFor({ ...input, closureCatalog, prefix: input.prefix, minTrains, approachBrakes: input.approachBrakes, zMin });
+    if (arrival.blocked)
+        return {
+            candidates: [],
+            expansions: 0,
+            closures: 0,
+            elapsedMs: elapsed(),
+            timedOut: false,
+            approachBlocked: arrival.blocked,
+            approachBrakes: arrival.brakes,
+            midBlocks: 0,
+            rejected: {},
+        };
+    const { approach, target, occ: occ0, brakes } = arrival;
     // Impasse au bout du début : inutile de lancer le faisceau (et d'accuser bounds ou la référence).
     const exitBlocked = exitProblem(table, input.ride, input.start, occ0, input.env, input.bounds, zMin);
     if (exitBlocked)
@@ -468,7 +498,8 @@ export function searchSection(input: SearchInput): SearchResult {
         if (input.minInversions && layout.inversions < input.minInversions) return reject("trop peu d'inversions");
         if (blockBrakesBeforeLift(all, { stationLaunch: input.stationLaunch, table, trainTiles: input.trainTiles }).some((b) => b.index >= input.prefix.length))
             return reject("frein de bloc avant le lift");
-        if (midBlocks) {
+        // Un frein de bloc déjà posé dans le début repart aussi sur la section cherchée : contrôlé même sans midBlocks.
+        if (midBlocks || prefixBlocks.blockBrakes) {
             const why = midBlockProblem(all, input.prefix.length, input.prefix.length + b.pieces.length);
             if (why) return reject(why);
         }
@@ -478,6 +509,8 @@ export function searchSection(input: SearchInput): SearchResult {
         const newSim = sim.slice(input.prefix.length);
         // G latéraux prédits au-delà de la pénalité du jeu (+3,75 d'intensité) : candidat écarté, quel que soit le score.
         if (newSim.some((s) => (s.gLat ?? 0) > LATERAL_G_PENALTY)) return reject("G latéraux > 2,8");
+        // Virage incliné à plat abordé au pas (sommet du lift) : écarté comme à la pose.
+        if (slowBanks(table, all, sim, input.prefix.length).length) return reject("virage incliné trop lent");
         const warnings = input.judge(newPieces, newSim, b.macros);
         const sBends = b.sBends;
         const space = spaceProfile(table, all, { closed: true });
@@ -563,6 +596,8 @@ export function searchSection(input: SearchInput): SearchResult {
                     const tail = b.pieces.slice(b.pieces.length - b.tailSim.length);
                     const sim = input.speedOf([...tail, ...compiled.pieces], b.tailSim[0]?.vIn ?? b.v).slice(tail.length);
                     if (sim.some((s) => s.stall || s.reached === false)) continue;
+                    // Virage incliné au pas (après un frein de bloc, au sommet d'une colline) : branche morte dès la pose.
+                    if (slowBanks(table, compiled.pieces, sim).length) continue;
                     const macros = [...b.macros, ...m];
                     const pieces = [...b.pieces, ...compiled.pieces.map((p) => ({ ...p, macro: p.macro === undefined ? undefined : macroIndex + p.macro }))];
                     // Repartie du frein de bloc de mi-parcours contrôlée dès la pose, puis à chaque élément tant qu'il est dans la

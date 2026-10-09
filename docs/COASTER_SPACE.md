@@ -409,6 +409,49 @@ Tentative 5 de « Black Widow Loop » (Haiku ; Black Widow +3 niveaux, +8 km/h, 
 
 Pas encore testé en jeu.
 
+## 7 quindecies. Place d'entrée dans l'arrivée en gare (9 octobre 2026)
+
+### Constat
+
+« Black Widow Vortex XL » (Haiku ; mêmes modifications, tracé différent) : station en (80,98) vers −y, à 4 tuiles du bord sud de bounds (y2 = 102 ; le site de coaster_find_site avait sa station ailleurs, 9 tuiles devant le bord). Pour 3 trains, l'arrivée imposée (2 brakes + block_brakes) occupe (80,99)–(80,101). La dernière pièce de la fermeture doit entrer en (80,101) depuis (80,102), et la pièce d'avant depuis y ≥ 103, hors de bounds. Aucune fermeture n'était donc possible. Trois recherches de 120 s ont donné 5 000 « fermeture A* introuvable », et le conseil « élargis bounds » a été suivi vers l'est et le nord, jamais au sud. Les rangées y 99–104 étaient libres (Black Widow Max commence en y 105). Le contrôle `approachBlocked` ne vérifiait que les pièces d'arrivée, pas la place pour y entrer.
+
+### Fait
+
+- `leadInProblem` (track.ts) est le pendant d'`exitProblem` côté gare. Il cherche à rebours au plus 3 pièces du catalogue de fermeture qui finissent à l'entrée de l'arrivée, dans bounds, sur un terrain libre et hors du circuit. Sinon il renvoie l'obstacle le plus fréquent.
+- `arrivalFor` (search.ts) regroupe l'arrivée imposée par les trains et sa place. searchSection s'arrête avant le faisceau (`approachBlocked` : « entrée de l'arrivée en (80,101) : aucune pièce n'y mène, (80,103) … hors de bounds »). coaster_build_plan refuse un plan ouvert (OBSTRUCTED) avant de poser le début, avec le même conseil : reculer bounds derrière la station (freins + 3 tuiles) ou déplacer la station.
+- Hors jeu, sur le même début et le même site (terrain plat), y2 = 104 suffit : 1 variante (boucle, 3 trains) en ~27 s. Test `test/search-lead-in.test.ts`.
+
+Pas encore testé en jeu.
+
+## 7 sexdecies. Frein de bloc du début non contrôlé par la recherche (9 octobre 2026)
+
+### Constat
+
+« Black Widow Sidewinder » refait sans virage au sommet (Haiku) : la chute droite finissait au sol en (100,102), à 3 tuiles de Black Widow Max, entre deux chemins (x 101, y 96). Recherche : 150 fermetures, 119 « A* introuvable », 31 calages, aucune variante. Corrigé à la main : chute arrêtée au niveau 14 puis virage large incliné vers l'est, au-dessus des chemins. Le frein de bloc de mi-parcours a ensuite été posé dans le début (niveau 10, 3 au-dessus du sol). midBlocks valait alors 0 et `midBlockProblem` n'était plus appelé. La recherche a proposé une fin qui calait à 3 trains sur la colline suivante. Seul coaster_build_plan l'a signalé (FREIN DE BLOC AVANT UNE MONTÉE).
+
+### Fait
+
+- searchSection contrôle la repartie (`blockBrakeRestartWarnings`) dès que le début contient un frein de bloc, pas seulement quand elle en pose un. Une variante qui cale est rejetée (« frein de bloc qui ne repart pas » dans `rejected`).
+- Test `test/search-prefix-block.test.ts` (échoue sans la correction).
+
+Testé en jeu (ride 10, fin cherchée avec le frein de bloc posé par la recherche) : 7,56 / 9,09 / 5,13, 1 009 m, 82 km/h, 3 trains, ni calage ni accident.
+
+## 7 septdecies. Repli quand le bout du circuit est une poche (9 octobre 2026)
+
+### Constat
+
+Même « Black Widow Sidewinder » (7 sexdecies). La première chute droite de Haiku finissait au sol en (100,102). La poche libre au niveau 7 faisait ~40 tuiles : chemins en x 101 et y 96, Black Widow Max en y 105. Il restait ~150 tuiles de piste à poser. `exitProblem` ne voyait rien, puisqu'un virage à gauche passait. La recherche concluait « A* introuvable » et conseillait d'élargir bounds, ce qui ne pouvait pas aider. La sortie de la poche, trouvée à la main : retirer la chute (10 pièces après le sommet du lift), la refaire moins haute pour finir au-dessus des chemins, puis tourner vers la zone libre. Un petit modèle ne fait pas ce raisonnement spatial.
+
+### Fait
+
+- `retreatOptions` (planners/backtrack.ts) : coupes sur une pose plate et droite, jamais dans le lift, au plus 40 pièces et 3 coupes. Si la coupe retire la première chute, la relance est `drop { height, steep }` de 3 en 3 niveaux sous la hauteur posée, jusqu'à `dropMin` (80 % de la chute de la référence, sinon 60 % de la sienne). Sinon la fin est cherchée depuis la coupe. Chaque relance est vérifiée : circuit gardé, terrain, chemins, attractions, bounds. Une relance qui viole `firstDropProblems` est écartée.
+- coaster_search_section `backtrack` (vrai par défaut) : 40 % de timeMs pour le bout actuel. Sans variante (impasse comprise, sauf arrivée en gare bloquée ou chute trop petite pour les modifications), les replis sont essayés en deux tours : une courte part chacun, puis le reste pour ceux arrêtés par le temps. Une hauteur sans issue peut épuiser son faisceau lentement : 27 s hors jeu pour 20 niveaux, contre 3,7 s pour 17 qui réussit. La réponse dit « REPLI NÉCESSAIRE » dans summary, avec `undo`, `retreat` et des variantes dont le plan commence par la nouvelle chute. next_hints : coaster_undo { count } puis coaster_build_plan.
+- `roomAhead` : tuiles libres atteignables au niveau du bout (remplissage 4-connexe, mêmes obstacles que `blockProblem`, circuit et bounds). coaster_build_plan close: false ajoute l'avertissement POCHE, dans summary et en tête des warnings, sous max(30, 50 % de la piste qui reste).
+- Consignes du serveur (server.ts) : POCHE et REPLI NÉCESSAIRE, appliquer undo puis le plan, ne pas élargir bounds. Le conseil d'impasse ne propose plus de « virage au sommet » (virage incliné au pas, refusé).
+- Test `test/backtrack.test.ts` : même site hors jeu, 198 à 262 tuiles, 3 trains, une boucle. Aucune fin depuis la poche ; `roomAhead` < 60 au sol, et plein au niveau 14 ; replis sans toucher le lift ; une relance (chute de 17) referme avec 3 trains.
+
+Pas encore testé en jeu par Haiku.
+
 ## 8. Verticalité (relief)
 
 > Ajouté le 8 octobre 2026, à la demande de l'utilisateur, après le second essai compact de Nightmare Frenzy (7,37 / 8,06 / 4,23 sur 24×19, `nf-compact-2`).

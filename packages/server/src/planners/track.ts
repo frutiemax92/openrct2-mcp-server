@@ -711,6 +711,50 @@ export function exitProblem(
     return [...seen.entries()].sort((a, b) => b[1] - a[1])[0][0];
 }
 
+/**
+ * Pendant d'`exitProblem` côté gare (« Black Widow Vortex XL », Haiku, 9 octobre 2026 : station à 4 tuiles du bord de
+ * bounds, l'arrivée freins + bloc finissait au bord, aucune pièce ne pouvait y entrer ; 5 000 fermetures « A*
+ * introuvable » en trois recherches de 120 s). Cherche à rebours `depth` pièces du catalogue de fermeture qui finissent
+ * à `goal` sans sortir de bounds, du terrain ni de `occ`. Renvoie l'obstacle le plus fréquent si aucune suite ne passe.
+ */
+export function leadInProblem(
+    catalog: TrackSegmentInfo[],
+    goal: TrackPose,
+    occ: Occupancy,
+    env: TrackEnv,
+    bounds?: TrackBounds,
+    zMin = 16,
+    depth = 3,
+): string | null {
+    const seen = new Map<string, number>();
+    let budget = 20_000;
+    const fits = (pose: TrackPose, left: number): boolean => {
+        if (!left) return true;
+        for (const seg of catalog) {
+            if (--budget < 0) return true;
+            const p = pieceEndingAt(pose, seg);
+            if (!p) continue;
+            const el = pieceElements(p, seg);
+            let why: string | null = null;
+            const hit = occ.conflict(el);
+            if (hit) why = `(${hit.x},${hit.y}) niveau ${hit.z / 16} : piste du circuit`;
+            for (const e of el) {
+                if (why) break;
+                const cause = e.z < zMin ? "trop bas" : (blockProblem(env, e) ?? (bounds ? boundsProblem(bounds, e) : null));
+                if (cause) why = `(${e.x},${e.y}) niveau ${e.z / 16} : ${cause}`;
+            }
+            if (why) {
+                seen.set(why, (seen.get(why) ?? 0) + 1);
+                continue;
+            }
+            if (fits(beginPose(p, seg), left - 1)) return true;
+        }
+        return false;
+    };
+    if (fits(goal, depth) || !seen.size) return null;
+    return [...seen.entries()].sort((a, b) => b[1] - a[1])[0][0];
+}
+
 export function availableInversions(table: SegmentTable, ride: RideTrackInfo): string[] {
     const out: string[] = [];
     for (const kind of INVERSION_KINDS) {
