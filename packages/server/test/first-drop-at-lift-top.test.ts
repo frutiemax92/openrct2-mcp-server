@@ -56,7 +56,7 @@ describe("début qui finit au sommet du lift (Custom Wooden Loop, Haiku, 9 octob
         expect(v.some((m) => m[0].op === "turn")).toBe(true);
     });
 
-    function search(lift: number, x2: number, timeMs = 30_000) {
+    function search(lift: number, x2: number, timeMs = 30_000, y2 = 83) {
         const r = start(lift);
         const occ = new Occupancy(rideClearance(WOODEN));
         for (const p of r.pieces) occ.add(pieceElements(p, table.require(p.type)));
@@ -68,7 +68,7 @@ describe("début qui finit au sommet du lift (Custom Wooden Loop, Haiku, 9 octob
             goal: beginPose(r.pieces[0], table.require(r.pieces[0].type)),
             occupancy: occ,
             env,
-            bounds: { x1: 21, y1: 60, x2, y2: 83 },
+            bounds: { x1: 21, y1: 60, x2, y2 },
             closureCatalog: searchCatalog(table, ride, { steep: true, diagonals: true }),
             speedOf: (pieces, v) => simulate(model, table, pieces, v, train),
             simulateCircuit: sim,
@@ -86,15 +86,20 @@ describe("début qui finit au sommet du lift (Custom Wooden Loop, Haiku, 9 octob
         });
     }
 
-    it("lift de 12 de Haiku, sommet à 6 tuiles du bord : la chute qui tient est trop lente, la recherche le dit tout de suite", () => {
+    it("lift de 12 de Haiku, sommet à 6 tuiles du bord : la chute raide qui tourne de 90° vers l'intérieur passe", () => {
+        // Avant drop { turn }, la recherche concluait PREMIÈRE CHUTE IMPOSSIBLE : seule une chute droite ou en diagonale
+        // était essayée. Le virage d'1 tuile à 60° tourne vers +y, où bounds laisse la place.
+        const r = start(12);
         const res = search(12, 56);
-        expect(res.candidates).toEqual([]);
-        expect(res.firstDropKmh).toBeLessThan(need);
-        expect(res.elapsedMs).toBeLessThan(5_000);
-    });
+        expect(res.candidates.length).toBeGreaterThan(0);
+        for (const c of res.candidates) {
+            expect(c.macros[0]).toMatchObject({ op: "drop", turn: "left" });
+            expect(firstDropSpeed(table, ride, [...r.pieces, ...c.pieces, ...c.closure], sim)!.kmh).toBeGreaterThanOrEqual(need);
+        }
+    }, 60_000);
 
-    it("lift de 15 collé au bord de bounds : aucune chute assez rapide ne tient, la recherche le dit tout de suite", () => {
-        const res = search(15, 56);
+    it("lift de 15 collé au bord de bounds, sans place pour tourner : aucune chute assez rapide ne tient, la recherche le dit tout de suite", () => {
+        const res = search(15, 56, 30_000, 63);
         expect(res.candidates).toEqual([]);
         expect(res.firstDropKmh).toBeLessThan(need);
         expect(res.rejected["première chute trop lente"]).toBeGreaterThan(0);

@@ -41,6 +41,11 @@ export interface EstimateOptions {
     env?: TrackEnv;
     /** Voitures par train (défaut : train.cars). */
     carsPerTrain?: number;
+    /**
+     * Circuit ouvert (une branche de la recherche) : le train roule de la station au bout, notes du morceau posé. Sert à
+     * comparer des branches de même profondeur, pas à prédire la note finale.
+     */
+    open?: boolean;
 }
 
 /** mph affichés d'une vitesse brute >> 16 (ToHumanReadableSpeed : v × 9 >> 18). */
@@ -164,7 +169,7 @@ export function estimateRatings(o: EstimateOptions): RatingEstimate | null {
         rideType: o.rideType,
         train: exactTrain(o.train),
         liftHillSpeed: o.liftHillSpeed,
-        closed: true,
+        closed: !o.open,
         blockZ: (t) => table.get(t)?.elements[0]?.z ?? 0,
     });
     if (!ex || !ex.completed || ex.stalledAt !== null) return null;

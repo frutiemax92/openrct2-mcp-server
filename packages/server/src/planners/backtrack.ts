@@ -10,7 +10,8 @@ import {
     pieceElements,
     type Macro,
     type RideTrackInfo,
-    type SegmentTable,
+    SegmentTable,
+    type TurnSide,
     type TrackBlock,
     type TrackBounds,
     type TrackEnv,
@@ -80,17 +81,41 @@ export function retreatOptions(
             const heights: number[] = [];
             for (let h = fd.height - DROP_STEP; h >= min && heights.length < MAX_DROPS; h -= DROP_STEP) heights.push(h);
             if (heights.length < MAX_DROPS && min < fd.height && !heights.includes(min)) heights.push(min);
-            for (const h of heights)
-                restarts.push({
-                    macros: [{ op: "drop", height: h, steep: fd.steep > 0 }],
-                    label: `première chute refaite moins haute : ${h} niveaux au lieu de ${fd.height}, la fin tourne plus haut`,
-                });
+            // La coupe peut tomber au milieu de la chute : la relance ne refait que la part retirée.
+            const removed = pieces.slice(k, fd.end);
+            const kept = fd.height - removed.reduce((a, p) => a + Math.max(0, (table.require(p.type).beginZ - table.require(p.type).endZ) / 16), 0);
+            // Chute qui tourne (virage à 60°, huitièmes…) : le sens choisi au jugé peut mener vers une autre attraction
+            // (« Timber Ridge » de Haiku : seul le virage à droite essayé, vers Timber Loop). On essaie l'autre sens, à la
+            // même hauteur d'abord, puis les deux sens plus bas.
+            const names = removed.map((p) => SegmentTable.nameOf(p.type));
+            const twist = names.find((n) => /^(left|right)QuarterTurn1TileDown60$/.test(n));
+            const side = (n: string): TurnSide => (n.startsWith("left") ? "left" : "right");
+            const flip = (d: TurnSide): TurnSide => (d === "left" ? "right" : "left");
+            if (twist) {
+                const d = side(twist);
+                const drop = (h: number, dir: TurnSide): Macro => ({ op: "drop", height: Math.round(h - kept), turn: dir });
+                restarts.push({ macros: [drop(fd.height, flip(d))], label: `première chute refaite en tournant à ${flip(d) === "left" ? "gauche" : "droite"} au lieu de ${d === "left" ? "gauche" : "droite"}` });
+                for (const h of heights)
+                    for (const dir of [d, flip(d)])
+                        restarts.push({ macros: [drop(h, dir)], label: `première chute refaite moins haute (${h} niveaux au lieu de ${fd.height}) en tournant à ${dir === "left" ? "gauche" : "droite"}` });
+            } else {
+                if (removed.some((p) => /^(left|right)/.test(SegmentTable.nameOf(p.type))))
+                    restarts.push({
+                        macros: removed.map((p) => ({ op: "piece", name: mirrorName(SegmentTable.nameOf(p.type)) })),
+                        label: "première chute refaite avec ses virages dans l'autre sens",
+                    });
+                for (const h of heights)
+                    restarts.push({
+                        macros: [{ op: "drop", height: Math.round(h - kept), steep: fd.steep > 0 }],
+                        label: `première chute refaite moins haute : ${h} niveaux au lieu de ${fd.height}, la fin tourne plus haut`,
+                    });
+            }
         } else {
             restarts.push({ macros: [], label: `${pieces.length - k} dernière(s) pièce(s) retirée(s), fin cherchée depuis la pose plate précédente` });
         }
         for (const r of restarts) {
             const c = r.macros.length ? compileMacros(table, ride, start, r.macros) : { pieces: [], end: start, errors: [] };
-            if (c.errors.length) continue;
+            if (c.errors.length || r.macros.some((m) => m.op === "drop" && m.height < 1)) continue;
             const occ = new Occupancy(clearance);
             for (const p of kept) occ.add(pieceElements(p, table.require(p.type)));
             if (!fitsAfter(table, c.pieces, occ, env, opts.bounds, opts.zMin ?? 16)) continue;
@@ -98,6 +123,11 @@ export function retreatOptions(
         }
     }
     return out;
+}
+
+/** Pièce symétrique (gauche ↔ droite) : leftQuarterTurn3Tiles ↔ rightQuarterTurn3Tiles, flatToLeftBank ↔ flatToRightBank… */
+export function mirrorName(name: string): string {
+    return name.replace(/left|right|Left|Right/g, (w) => ({ left: "right", right: "left", Left: "Right", Right: "Left" })[w]!);
 }
 
 /** Pose `added` dans `occ` (déjà rempli du circuit gardé) si chaque pièce passe ; faux au premier obstacle. */

@@ -114,6 +114,11 @@ export interface SearchInput {
      * écartée sous `minExcitement` (COASTER_SPACE 7 novodecies).
      */
     estimate?: (all: Piece[]) => RatingEstimate | null;
+    /**
+     * Notes du circuit ouvert (début + branche, estimateRatings { open }) : avec `targetExcitement`, le faisceau classe ses
+     * meilleures branches sur leur excitation jusque-là (plafonnée à l'objectif), pas seulement sur la compacité.
+     */
+    estimatePartial?: (all: Piece[]) => RatingEstimate | null;
     minExcitement?: number;
     /**
      * Début qui finit au sommet du lift avec une excitation demandée : le premier élément est la première chute (raide,
@@ -189,8 +194,11 @@ export function firstDropVocabulary(maxHeight: number): Macro[][] {
     for (let height = maxHeight; height >= 2; height--)
         for (const steep of [true, false]) {
             v.push([{ op: "drop", height, steep }]);
-            for (const dir of ["left", "right"] as const)
+            for (const dir of ["left", "right"] as const) {
                 v.push([{ op: "turn", dir, size: "large", eighths: 1 }, { op: "drop", height, steep }, { op: "turn", dir, size: "large", eighths: 1, banked: true }]);
+                // Chute raide qui tourne de 90° à 60° : sans elle, la recherche ne tournait jamais en plongeant.
+                if (steep) v.push([{ op: "drop", height, turn: dir }]);
+            }
         }
     return v;
 }
@@ -223,6 +231,10 @@ interface Branch {
     blocks: number;
     /** Indice (dans `pieces`) du dernier frein de bloc de mi-parcours, -1 sans. */
     blockAt: number;
+    /** Niveaux au-dessus de la station des freins de bloc de mi-parcours posés : la chute qui suit chacun. */
+    blockLift: number;
+    /** Branche mère (ses macros) : diversité du faisceau. */
+    parentKey: string;
     /** Piste depuis la dernière limite de section (préfixe compris), en tuiles. */
     sinceMark: number;
     /** Vitesses des 3 dernières pièces : élan du morceau suivant. */
@@ -241,6 +253,7 @@ export function defaultVocabulary(opts: { inversions?: string[] } = {}): Macro[]
             for (const quarters of [1, 2])
                 for (const slope of ["flat", "up", "down"] as const) v.push([{ op: "turn", dir, size, banked: true, quarters, slope }]);
         for (const slope of ["steep_up", "steep_down"] as const) v.push([{ op: "turn", dir, slope }]);
+        for (const height of [10, 14]) v.push([{ op: "drop", height, turn: dir }]);
         for (const size of ["small", "large"] as const) for (const quarters of [2, 4]) for (const down of [false, true]) v.push([{ op: "helix", dir, quarters, down, size }]);
         // Chaque taille : sans taille, compileMacros prend la plus grande, qui cale souvent (boucle de bois large ou medium :
         // plus de 80 km/h à l'entrée, quand la boucle verticale small des designs RCT2 passe à ~65 km/h).
@@ -270,10 +283,16 @@ export function defaultVocabulary(opts: { inversions?: string[] } = {}): Macro[]
  * frein arrêté tient la tête du train, la queue repose sur les pièces d'avant : il faut un plat au moins aussi long
  * que le train, sinon la queue restée dans la montée le tire en arrière (`blockBrakeRestartWarnings`).
  */
-export function blockElements(): Macro[][] {
+export function blockElements(opts: { climbs?: boolean } = {}): Macro[][] {
     const v: Macro[][] = [];
     for (const length of [1, 2, 3, 4]) v.push([{ op: "brakes", length }, { op: "block_brakes" }]);
     for (const length of [2, 3, 4]) v.push([{ op: "straight", length }, { op: "block_brakes" }]);
+    // Montée sur l'élan puis frein de bloc (`blockBrakeWindow`) : au pied d'une grande chute (~90 km/h), il faut 14 à 18
+    // niveaux de montée pour l'aborder sous BLOCK_MAX_KMH. Sans cet élément, le faisceau devait empiler des climb de 8
+    // au plus avant un frein de bloc à plat, et la chute la plus haute ne se refermait jamais (Timber Ridge, 10 octobre
+    // 2026). Seulement quand le faisceau suit l'excitation : ailleurs, ces 8 éléments de plus ralentissaient le faisceau
+    // au point de perdre des fins (Black Widow Sidewinder, Timber Loop).
+    if (opts.climbs) for (const height of [6, 10, 14, 18]) for (const length of [2, 4]) v.push([{ op: "climb", height }, { op: "brakes", length }, { op: "block_brakes" }]);
     return v;
 }
 const isBlockElement = (m: Macro[]) => m.some((x) => x.op === "block_brakes");
@@ -388,6 +407,32 @@ const W_HOME = 3;
  * 2026 : 5 km/h de moyenne après des freins de mi-parcours, excitation 2,67).
  */
 const W_EXC = 60;
+/**
+ * Par point d'excitation estimée d'une branche ouverte (`estimatePartial`), jusqu'à l'objectif : une inversion (+0,11)
+ * vaut ~10 tuiles empilées. Plus faible, le faisceau gardait les virages compacts plutôt que la boucle au pied de la chute.
+ */
+const W_EXC_BEAM = 300;
+/** Niveaux qu'une première chute posée par la recherche peut laisser au-dessus de la plus haute qui tient. */
+export const DROP_SLACK = 2;
+/** Branches notées par `estimatePartial` à chaque profondeur : POOL_FACTOR × la largeur du faisceau. */
+const POOL_FACTOR = 2;
+/**
+ * Styles de passe quand le faisceau suit l'excitation (`estimatePartial`) : les passes alternent, puis doublent la
+ * largeur. Un frein de bloc baisse la vitesse moyenne, donc l'excitation partielle ; sans une note qui le compense, le
+ * faisceau le repoussait au bout du circuit, sans élan pour la fin. Le second style le récompense davantage, d'autant
+ * plus haut qu'il est posé (la chute qui le suit), et plafonne les enfants d'une même branche (`maxChildren`). Sur le
+ * site de Timber Ridge (10 octobre 2026), chacun trouve l'objectif là où l'autre échoue : depuis le bas de la chute de
+ * 24 niveaux, le premier (7,60) ; depuis le sommet du lift, le second (7,79).
+ */
+interface PassStyle {
+    block: number;
+    blockLift: number;
+    maxChildren: number;
+}
+const PASS_STYLES: PassStyle[] = [
+    { block: W_BLOCK, blockLift: 0, maxChildren: 0 },
+    { block: 60, blockLift: 4, maxChildren: 4 },
+];
 /** Vitesse (mph, ~10 km/h) sous laquelle le train roule au pas (`deadStart`). */
 const DEAD_START_MPH = 6.2;
 /** Part de la piste qui reste que l'élan d'un bout au sol doit couvrir à plat (`deadStart`). */
@@ -400,7 +445,15 @@ function styleScore(b: Branch, targetDrops: number): number {
     return W_DROP * Math.min(b.drops, targetDrops) - W_REPEAT * b.repeats;
 }
 
-function rescore(b: Branch, targetDrops: number, midBlocks: number, steepNeed = 0, home?: { distance: number; minTiles: number }, invNeed = 0): number {
+function rescore(
+    b: Branch,
+    targetDrops: number,
+    midBlocks: number,
+    steepNeed = 0,
+    home?: { distance: number; minTiles: number },
+    invNeed = 0,
+    style: PassStyle = PASS_STYLES[0],
+): number {
     // La longueur ne rapporte que jusqu'à la cible ; au-delà, seul le retour compte.
     const tiles = home ? Math.min(b.tiles, home.minTiles) : b.tiles;
     const overshoot = home ? Math.max(0, home.distance - Math.max(0, home.minTiles - b.tiles)) : 0;
@@ -408,7 +461,8 @@ function rescore(b: Branch, targetDrops: number, midBlocks: number, steepNeed = 
         styleScore(b, targetDrops) +
         W_STEEP * Math.min(b.steep, steepNeed) +
         W_INV * Math.min(b.inversions, invNeed) +
-        W_BLOCK * Math.min(b.blocks, midBlocks) +
+        style.block * Math.min(b.blocks, midBlocks) +
+        style.blockLift * b.blockLift +
         W_STACK * b.stack +
         W_TOUCH * b.touch +
         W_TILE * tiles -
@@ -571,7 +625,8 @@ export function searchSection(input: SearchInput): SearchResult {
     const midBlocks = Math.max(0, minTrains + 1 - prefixBlocks.sections - (approach.length ? 1 : 0));
     const steepNeed = Math.max(0, (input.minSteep ?? 0) - input.prefix.filter((p) => isSteepPiece(p.type)).length);
     const invNeed = Math.max(0, (input.minInversions ?? 0) - layoutStats(table, input.prefix).inversions);
-    const vocabAll = midBlocks && !vocab.some(isBlockElement) ? [...vocab, ...blockElements()] : vocab;
+    const excitementBeam = !!input.estimatePartial && input.targetExcitement !== undefined;
+    const vocabAll = midBlocks && !vocab.some(isBlockElement) ? [...vocab, ...blockElements({ climbs: excitementBeam })] : vocab;
     // Section minimale (comme `blockSpacing`) : 2 trains, ou la moitié de la section moyenne du circuit visé. Un frein de
     // bloc n'est proposé qu'à cette distance de la dernière limite (sommet du lift, frein précédent) ; la note le
     // récompense, et sans ce seuil le faisceau le pose collé au lift, ce que la fermeture refuse ensuite.
@@ -609,6 +664,8 @@ export function searchSection(input: SearchInput): SearchResult {
         lastOp: null,
         blocks: 0,
         blockAt: -1,
+        blockLift: 0,
+        parentKey: "",
         sinceMark: prefixTail,
         tailSim: [],
         score: 0,
@@ -742,7 +799,11 @@ export function searchSection(input: SearchInput): SearchResult {
     const distinct = () => new Set(candidates.map((c) => JSON.stringify(c.macros.slice(0, -1)))).size;
     let passes = 0;
     const short = () => input.targetExcitement !== undefined && !candidates.some((c) => (c.estimate?.excitement ?? 0) >= input.targetExcitement!);
-    for (let width = beamWidth; width <= MAX_BEAM && !timedOut && (distinct() < wanted || short()); width *= 2) {
+    const styles = excitementBeam ? PASS_STYLES : PASS_STYLES.slice(0, 1);
+    for (let pass = 0; ; pass++) {
+        const width = beamWidth * 2 ** Math.floor(pass / styles.length);
+        const style = styles[pass % styles.length];
+        if (width > MAX_BEAM || timedOut || (distinct() >= wanted && !short())) break;
         passes++;
         let beam: Branch[] = [root];
         for (let depth = 0; depth < maxDepth && beam.length && !timedOut; depth++) {
@@ -880,17 +941,53 @@ export function searchSection(input: SearchInput): SearchResult {
                         lastOp: m[m.length - 1].op,
                         blocks: b.blocks + (block ? 1 : 0),
                         blockAt,
+                        blockLift: b.blockLift + (block ? Math.max(0, (compiled.end.z - input.goal.z) / 16) : 0),
+                        parentKey: b.macros.length + ":" + b.end.x + "," + b.end.y + "," + b.end.z + "," + b.score.toFixed(3),
                         sinceMark: block ? 0 : b.sinceMark + tiles,
                         tailSim: [...b.tailSim, ...sim].slice(-3),
                         score: 0,
                     };
-                    nb.score = rescore(nb, targetDrops, midBlocks, steepNeed, { distance: homeDistance(nb.end), minTiles: input.minTiles }, invNeed);
+                    nb.score = rescore(nb, targetDrops, midBlocks, steepNeed, { distance: homeDistance(nb.end), minTiles: input.minTiles }, invNeed, style);
                     const k = poseKey(nb.end);
                     const cur = next.get(k);
                     if (!cur || cur.score < nb.score) next.set(k, nb);
                 }
             }
-            beam = [...next.values()].sort((a, b) => b.score - a.score).slice(0, width);
+            // Au plus style.maxChildren enfants d'une même branche : sans ce plafond, le faisceau ne gardait plus qu'une lignée
+            // (variantes d'un même début) dès la 4e profondeur, et la boucle posée au pied de la chute en sortait.
+            const diverse = (list: Branch[], n: number): Branch[] => {
+                if (!style.maxChildren) return list.slice(0, n);
+                const out: Branch[] = [];
+                const per = new Map<string, number>();
+                for (const b of list) {
+                    const k = b.parentKey;
+                    const c = per.get(k) ?? 0;
+                    if (c >= style.maxChildren) continue;
+                    per.set(k, c + 1);
+                    out.push(b);
+                    if (out.length >= n) break;
+                }
+                return out;
+            };
+            let ranked = [...next.values()].sort((a, b) => b.score - a.score);
+            // Première chute posée par la recherche : seulement les plus hautes qui tiennent (à DROP_SLACK niveaux près). La
+            // vitesse de la première chute fait l'élan du circuit ; la note de compacité préférait une chute courte.
+            if (depth === 0 && input.firstDrop) {
+                const dropHeight = (b: Branch) => Math.max(0, ...b.macros.map((m) => (m.op === "drop" ? m.height : 0)));
+                const top = Math.max(0, ...ranked.map(dropHeight));
+                ranked = ranked.filter((b) => dropHeight(b) >= top - DROP_SLACK);
+            }
+            // Excitation jusque-là (circuit ouvert, formule du jeu) sur le haut du classement : sans elle, la compacité seule
+            // classait le faisceau, et l'élan d'une grande chute partait en virages plats et hélices avant le frein de bloc,
+            // les inversions venant ensuite, lentes (Timber Ridge, 10 octobre 2026 : chute de 24 niveaux, 0 fin à 7,55).
+            if (excitementBeam && input.estimatePartial && input.targetExcitement !== undefined) {
+                const pool = ranked.slice(0, POOL_FACTOR * width);
+                for (const b of pool) {
+                    const e = input.estimatePartial([...input.prefix, ...b.pieces]);
+                    b.score += e ? W_EXC_BEAM * Math.min(e.excitement, input.targetExcitement) : -Infinity;
+                }
+                beam = diverse(pool.filter((b) => b.score > -Infinity).sort((a, b) => b.score - a.score), width);
+            } else beam = diverse(ranked, width);
             for (const b of beam) {
                 if (elapsed() > timeMs) {
                     timedOut = true;
@@ -900,7 +997,10 @@ export function searchSection(input: SearchInput): SearchResult {
             }
         }
     }
-    candidates.sort((a, b) => b.score - a.score);
+    // Celles qui atteignent l'excitation visée d'abord : sinon une fin à l'objectif, moins compacte, sortait des `results`
+    // gardées alors qu'elle arrêtait les passes (Timber Ridge, 10 octobre 2026 : 7,60 trouvée, 7,49 rendue).
+    const meets = (c: SearchCandidate) => (input.targetExcitement !== undefined && (c.estimate?.excitement ?? 0) >= input.targetExcitement ? 1 : 0);
+    candidates.sort((a, b) => meets(b) - meets(a) || b.score - a.score);
     // Variantes distinctes : une par suite de macros jusqu'à l'avant-dernière.
     const out: SearchCandidate[] = [];
     const seen = new Set<string>();

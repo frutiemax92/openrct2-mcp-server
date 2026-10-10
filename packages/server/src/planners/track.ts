@@ -649,6 +649,33 @@ export function slopeRun(
     return null;
 }
 
+/** Hauteurs possibles (niveaux, 2 à 40) d'une pente droite qui part de `from` : texte pour les messages d'erreur. */
+function dropHeights(
+    table: SegmentTable,
+    ride: RideTrackInfo,
+    from: number,
+    steep: boolean,
+    twist?: TurnSide,
+    chain = false,
+    diag = false,
+    down = true,
+): string {
+    const sign = down ? -1 : 1;
+    const ok: number[] = [];
+    for (let h = 2; h <= 40 && ok.length < 12; h++) {
+        const halves = from === PITCH.flat ? [0] : [0, -8, 8];
+        if (twist) {
+            const t = findTurn(table, ride, { op: "turn", dir: twist, slope: "steep_down" }, false)?.[0];
+            const fits = halves.some((d) => {
+                const run = t && slopeRun(table, ride, from, -h * 16 - (t.endZ - t.beginZ) + d, { steep: true, chain: false });
+                return !!run && run.some((s, i) => s.endSlope === PITCH.down60 && i < run.length - 1);
+            });
+            if (fits) ok.push(h);
+        } else if (halves.some((d) => slopeRun(table, ride, from, sign * h * 16 + d, { steep, chain, diag }))) ok.push(h);
+    }
+    return ok.length ? `hauteurs possibles : ${ok.join(", ")}${ok.length === 12 ? "…" : ""}` : "aucune hauteur possible";
+}
+
 // ---------------------------------------------------------------------------
 // Macros (SPEC 12.6)
 // ---------------------------------------------------------------------------
@@ -690,7 +717,7 @@ export type Macro =
     | { op: "launch"; height: number }
     | { op: "booster"; length: number; speed?: number }
     | { op: "climb"; height: number; steep?: boolean }
-    | { op: "drop"; height: number; steep?: boolean }
+    | { op: "drop"; height: number; steep?: boolean; turn?: TurnSide }
     | { op: "hill"; height: number; steep?: boolean }
     | {
           op: "turn";
@@ -953,15 +980,41 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
         case "lift":
         case "climb":
         case "drop": {
-            const lv = level();
+            const down = m.op === "drop";
+            const dz = (down ? -1 : 1) * m.height * 16;
+            // Déjà en pente dans le même sens (virage raide, autre chute) : la pente continue, sans repasser à plat. Avant,
+            // turn { slope: 'steep_down' } puis drop donnait 60° → plat → 25° → 60° (« Timber Ridge » de Haiku).
+            const same = pose.bank === ROLL.none && (down ? pose.slope === PITCH.down25 || pose.slope === PITCH.down60 : pose.slope === PITCH.up25 || pose.slope === PITCH.up60);
+            const from = same ? pose.slope : PITCH.flat;
+            const lv = same ? [] : level();
             if (typeof lv === "string") return lv;
-            const dz = (m.op === "drop" ? -1 : 1) * m.height * 16;
             // Lift : raide (60°) si le type le permet, sauf steep: false (lift 25° classique, 1 niveau par tuile).
-            const steep = m.op === "lift" ? (m.steep ?? ride.supportsSteepLift) && ride.supportsSteepLift : !!m.steep;
+            const steep =
+                (m.op === "lift" ? (m.steep ?? ride.supportsSteepLift) && ride.supportsSteepLift : !!m.steep || (m.op === "drop" && !!m.turn)) ||
+                (same && isSteep(pose.slope));
             if (m.op === "lift" && m.steep && !ride.supportsSteepLift) return `${ride.name} n'a pas de chaîne raide (60°) : lift sans steep`;
-            const run = slopeRun(table, ride, PITCH.flat, dz, { steep, chain: m.op === "lift", diag });
-            if (!run) return `aucune suite de pièces droites ne fait ${m.op === "drop" ? "descendre" : "monter"} de ${m.height} niveau(x) exactement`;
-            return [...lv, ...run.map((seg) => ({ seg, chain: m.op === "lift" && climbs(seg) }))];
+            const chain = m.op === "lift";
+            if (m.op === "drop" && m.turn) {
+                // Chute raide qui tourne de 90° (quart de tour d'1 tuile à 60°, 4 niveaux) au milieu de la partie à 60°.
+                if (diag) return "drop avec turn impossible en diagonale : reviens d'abord à l'orthogonale (turn size large, eighths 1)";
+                const twist = findTurn(table, ride, { op: "turn", dir: m.turn, slope: "steep_down" }, false)?.[0];
+                if (!twist) return `aucun virage à 60° pour ${ride.name} : drop sans turn, ou turn puis drop`;
+                const tdz = twist.endZ - twist.beginZ;
+                const runs = [0, -8, 8].map((d) => slopeRun(table, ride, from, dz - tdz + d, { steep: true, chain: false }));
+                const run = runs.find((r) => r && r.some((s, i) => s.endSlope === PITCH.down60 && i < r.length - 1)) ?? null;
+                const at60 = run ? run.map((s, i) => (s.endSlope === PITCH.down60 ? i : -1)).filter((i) => i >= 0 && i < run.length - 1) : [];
+                if (!run || !at60.length) return `drop { turn } : aucune chute à 60° de ${m.height} niveaux exactement avec un virage ; ${dropHeights(table, ride, from, true, m.turn)}`;
+                const at = at60[Math.floor((at60.length - 1) / 2)];
+                return [...lv, ...[...run.slice(0, at + 1), twist, ...run.slice(at + 1)].map((seg) => ({ seg }))];
+            }
+            // Depuis 60°, les sorties font un nombre de niveaux et demi (60 → 25 → plat : 2,5) : à un demi-niveau près.
+            const near = (d: number) => [d, ...(same ? [d - 8, d + 8] : [])].map((x) => slopeRun(table, ride, from, x, { steep, chain, diag })).find((r) => r) ?? null;
+            const run = near(dz);
+            if (!run) {
+                if (same) return `${m.op} : depuis la pente actuelle (${PITCH_NAME[pose.slope]}), aucune suite de pièces ne fait ${down ? "descendre" : "monter"} de ${m.height} niveau(x) exactement ; ${dropHeights(table, ride, from, steep, undefined, chain, diag, down)}`;
+                return `aucune suite de pièces droites ne fait ${down ? "descendre" : "monter"} de ${m.height} niveau(x) exactement`;
+            }
+            return [...lv, ...run.map((seg) => ({ seg, chain: chain && climbs(seg) }))];
         }
         case "launch": {
             // Lancement motorisé (Lunar Launcher) : montée 25° de poweredLift, qui poussent le train à puissance constante

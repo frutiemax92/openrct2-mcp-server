@@ -617,6 +617,49 @@ Résultat (instance headless, outil réel). Sans minimum, le bout de Timber Loop
 
 Tests : timber-loop-terrain.test.ts, avec le site relevé en jeu (test/fixtures/timber-loop-site.json). Il couvre les quarts de tuile, une montée le long de la pente depuis le bout, la fermeture A* avec `costToGoal` (9 pièces en moins de 4 000 expansions, poche refusée sans exploration) et une recherche à 3 trains qui trouve une fin posable. search-block-restart.test.ts passe en 13 s au lieu de 24.
 
+## 7 quinvicies. Chute raide qui tourne de 90° (10 octobre 2026)
+
+Constat. Pour « Timber Ridge » (ride 9, bois, objectif 7,5 à 3 trains), l'utilisateur a demandé une première chute raide qui tourne de 90°. Haiku a posé `turn { slope: 'steep_down' }` puis `drop { steep }`, et le serveur a produit `flatToDown60LongBase, rightQuarterTurn1TileDown60, down60ToFlatLongBase, flatToDown25, down25ToDown60, down60, down60ToFlatLongBase` : une chute en escalier, 60° → plat → 25° → 60°. Le virage à gauche passait sous le lac. Haiku a pris la droite, vers Timber Loop, et la recherche n'a trouvé aucune fin. Elle n'a jamais retenté l'autre sens.
+
+Causes :
+
+1. **Chaque macro de pente repartait du plat.** `drop`, `climb` et `lift` appelaient `level()` avant `slopeRun(PITCH.flat, …)`. Après un virage raide, la chute repassait donc à plat. Corrigé : si la pose descend déjà (montée : monte déjà), sans inclinaison, la macro continue depuis cette pente. Depuis 60°, chaque sortie fait un nombre de niveaux et demi (60 → 25 → plat : 2,5 ; `down60ToFlatLongBase` : 5,5), donc `height` est tenu à un demi-niveau près. Si aucune suite ne tient, l'erreur donne les hauteurs possibles.
+2. **Aucune chute vrillée d'un seul tenant.** Nouveau : `drop { height, turn }` place le quart de tour d'1 tuile à 60° au milieu des pièces `down60` (steep implicite ; 9 niveaux au moins en bois).
+3. **La recherche ne tournait jamais en plongeant.** `firstDropVocabulary` ne proposait que des chutes droites ou en diagonale, et `defaultVocabulary` des virages raides suivis d'un palier. Ajouté : `drop { height, turn: left|right }` dans les deux. Effet mesuré sur first-drop-at-lift-top.test.ts (lift à 6 tuiles du bord de bounds) : PREMIÈRE CHUTE IMPOSSIBLE est devenu une variante à 71 km/h qui tourne vers l'intérieur.
+4. **Le repli ne retentait pas l'autre sens.** `retreatOptions` refaisait la chute en ligne droite, plus basse, et perdait le virage. Si la chute retirée tourne à 60°, le repli essaie d'abord l'autre sens à la même hauteur, puis les deux sens plus bas. Si elle tourne autrement (huitièmes…), il ajoute les mêmes pièces en miroir (`mirrorName`). Corrigé au passage : une coupe au milieu de la chute ne refait que la part retirée (`kept`), au lieu de la hauteur entière.
+
+Consignes : server.ts et l'indice OBSTRUCTED (`firstDropRelocateHint`) demandent d'essayer les deux sens en dryRun, et de garder celui qui plonge vers la place libre.
+
+Tests : twisted-drop.test.ts. first-drop-at-lift-top.test.ts est recalé : le cas « impossible » a maintenant des bounds étroites des deux côtés.
+
+## 7 sexvicies. Première chute au plus bas, et faisceau qui suit l'excitation (10 octobre 2026)
+
+Constat. Haiku devait refaire Timber Ridge (ride 9, bois, lift au niveau 31, station au niveau 7, 3 trains, excitation au-dessus de 7,5) avec une chute tordue de 90°. Il a posé `drop { height: 17, turn }` au jugé : la chute s'arrêtait au niveau 14, alors que 24 niveaux tenaient jusqu'au sol (76 km/h au bas au lieu de 98). Mesuré : 7,38. L'utilisateur a demandé la chute la plus haute. Avec elle, trois recherches n'ont donné aucune fin : 2 295 fermetures tentées, aucune n'est arrivée jusqu'au contrôle d'excitation. Le repli a refait la chute à 16 niveaux. Pourtant une grande boucle tient au pied de la chute (3,5 G, sortie à 90 km/h ; la petite boucle y prend 7,1 G).
+
+Causes :
+
+1. **Rien ne jugeait la hauteur de la première chute.** `coaster_build_plan` acceptait toute chute assez rapide pour `minExcitement` ; la recherche (`firstDropVocabulary`) mettait toutes les hauteurs dans le faisceau, où la compacité préférait les courtes.
+2. **Le faisceau ne connaissait pas l'excitation.** Une branche était notée sur la compacité (empilement 3, côte à côte 1,5 par tuile), les chutes et les inversions manquantes (20 chacune). L'excitation ne comptait qu'à la fermeture. Le faisceau dépensait donc l'élan de la chute en virages plats et en hélices collées au reste, puis posait le frein de bloc, et seulement après les boucles, lentes. Trace : la branche avec la boucle medium au pied de la chute menait à la profondeur 0 (52), et disparaissait du faisceau à la profondeur 1 (95 pour virage, colline et virage).
+3. **Aucune montée avant le frein de bloc dans le vocabulaire.** Au pied de la chute (~90 km/h), il faut 14 à 18 niveaux de montée pour aborder le frein de bloc sous 50 km/h (`blockBrakeWindow`). Le faisceau n'avait que des `climb` de 8 au plus, et des freins de bloc à plat.
+4. **Frein de bloc repoussé au bout.** Une fois l'excitation partielle dans la note, un frein de bloc (vitesse moyenne en baisse) n'était plus payé par ses 20 points : posé à 166 tuiles sur 176, au niveau 12, la fin repartait sans élan (479 fermetures refusées pour la repartie).
+5. **Une seule lignée.** Le faisceau ne dédoublonnait que par pose de fin : dès la profondeur 4, les 80 branches étaient des variantes d'un même début.
+6. **Variante à l'objectif perdue.** Les `results` gardées étaient les plus compactes ; une fin à 7,60 en sortait (7,49 rendue), alors qu'elle arrêtait les passes.
+7. **Temps du repli perdu.** 60 % de `timeMs` était gardé pour reculer même sans repli possible (début arrêté au sommet du lift) : 48 s cherchées sur 120.
+
+Corrections :
+
+- `coaster_build_plan` : un plan qui finit la première chute (macro `drop`) est refusé si une chute plus haute d'au moins 3 niveaux tient au même endroit (`deeperFirstDrop` : terrain, circuit, autres attractions, bounds). PREMIÈRE CHUTE PAS AU PLUS BAS donne la hauteur qui tient et les deux vitesses de pointe. `shortDrop: true` passe outre, seulement à la demande de l'utilisateur ; le plan d'un repli de la recherche le porte.
+- `searchSection` : à la profondeur 0 d'une première chute, seules les chutes à `DROP_SLACK` (2) niveaux de la plus haute qui tient restent dans le faisceau.
+- `estimateRatings { open }` : notes du circuit ouvert, simulé de la station au bout. Avec `estimatePartial` et `targetExcitement`, chaque profondeur note ses 2 × largeur meilleures branches sur leur excitation jusque-là, plafonnée à l'objectif (300 par point : une inversion vaut ~10 tuiles empilées). Une branche dont le train ne finit pas le morceau est coupée.
+- Passes alternées (`PASS_STYLES`) quand le faisceau suit l'excitation : la note d'avant, puis un frein de bloc payé 60 plus 4 par niveau au-dessus de la station, avec au plus 4 enfants par branche. Sur le site, chacune trouve l'objectif là où l'autre échoue.
+- `blockElements({ climbs })` : `climb` de 6, 10, 14 ou 18, `brakes` de 2 ou 4, puis `block_brakes`. Seulement quand le faisceau suit l'excitation : ailleurs, ces éléments ralentissaient le faisceau au point de perdre les fins de Black Widow Sidewinder et de Timber Loop.
+- Variantes qui atteignent l'excitation visée classées d'abord.
+- `coaster_search_section` calcule les replis avant la recherche ; sans repli, tout `timeMs` va au bout actuel.
+
+Résultat (instance headless, outil réel, arguments de Haiku). Depuis le bas de la chute de 24 niveaux : 5 variantes, la meilleure estimée à 7,54 ; avant, aucune. Depuis le sommet du lift, la recherche pose une chute de 23 à 25 niveaux puis une fin estimée à 7,58 ; posée, elle fait 7,72 / 9,44 / 5,21 à l'essai avec un train. **À 3 trains, elle se bloque** : le premier train reste arrêté au frein de bloc de mi-parcours (entré à 22 km/h), et le jeu ne donne jamais de notes. L'ancien circuit de Haiku (7,38) tourne à 3 trains sur la même instance. Cause non trouvée : `Ride::moveTrainsToBlockBrakes` répartit les trains en avançant chacun jusqu'au premier frein de bloc fermé, et ce placement peut enfermer les trois dans un cycle de sections. La recherche contrôle le nombre de sections et la repartie d'un train seul, pas ce placement : à faire.
+
+Tests : timber-ridge-drop.test.ts, avec le site relevé en jeu (test/fixtures/timber-ridge-site.json). Depuis le bas de la chute, une fin estimée à 7,55 ; depuis le sommet du lift, une chute d'au moins 23 niveaux et une fin à l'objectif.
+
 ## 8. Verticalité (relief)
 
 > Ajouté le 8 octobre 2026, à la demande de l'utilisateur, après le second essai compact de Nightmare Frenzy (7,37 / 8,06 / 4,23 sur 24×19, `nf-compact-2`).

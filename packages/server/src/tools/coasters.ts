@@ -111,7 +111,7 @@ import {
     shelterPoints,
     type RatingInputs,
 } from "../planners/ratings.js";
-import { BLOCK_MAX_KMH, BRAKE_RUN, arrivalFor, fastBlockBrakes, searchSection, defaultVocabulary, type SearchResult } from "../planners/search.js";
+import { BLOCK_MAX_KMH, BRAKE_RUN, DROP_SLACK, arrivalFor, fastBlockBrakes, searchSection, defaultVocabulary, type SearchResult } from "../planners/search.js";
 import { retreatOptions, roomAhead } from "../planners/backtrack.js";
 import { findSites, type Site } from "../planners/site.js";
 import { blockBrakeWindow, blockBrakeWindowLine, endsAtLiftTop, estimateLine, estimateRatings, excitementShortfall, firstDropSpeed, liftForSpeed, liftTopSpeed, speedForExcitement, type RatingEstimate } from "../planners/estimate.js";
@@ -357,7 +357,8 @@ function firstDropRelocateHint(rideId: number, tiles?: number): string {
     return (
         `ne raccourcis ni le lift ni la chute (en dessous, le début est refusé). ${tiles ? `Lift et chute demandent ~${tiles} tuiles en ligne droite. ` : ""}` +
         "Dans l'ordre : 1) oriente le lift le long du côté le plus long de bounds : coaster_undo jusqu'à la station, puis un virage avant le lift (straight 1, turn, lift, drop) ; " +
-        "2) chute en diagonale : turn { size: 'large', eighths: 1 } sans inclinaison au sommet, drop, turn { size: 'large', eighths: 1, banked: true } ; " +
+        "2) chute raide qui tourne de 90° : drop { height, turn: 'left' } puis 'right' en dryRun, garde le sens qui plonge vers la place libre (loin des autres attractions et chemins) ; " +
+        "ou chute en diagonale : turn { size: 'large', eighths: 1 } sans inclinaison au sommet, drop, turn { size: 'large', eighths: 1, banked: true } ; " +
         "3) chute vers un terrain plus bas ou un lac (elle peut finir sous le niveau de la station) ; " +
         `4) sinon ride_demolish { ride: ${rideId} } puis coaster_create plus loin du bord ou station dans l'autre sens, ou coaster_find_site avec w ou h ≥ ${tiles ?? "lift + chute"} pour un site plus long. ` +
         "Seul l'utilisateur peut baisser l'objectif (minExcitement)."
@@ -401,9 +402,9 @@ function splitReference<A extends { reference?: ReferenceArg | null; trains?: nu
 }
 
 /** Notes estimées d'un circuit fermé de l'attraction (pièces depuis la station). */
-function estimateFor(st: CoasterState, pieces: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[], train: TrainShape | undefined, env?: TrackEnv): RatingEstimate | null {
+function estimateFor(st: CoasterState, pieces: (TrackPieceInfo & { chain?: boolean; brakeSpeed?: number })[], train: TrainShape | undefined, env?: TrackEnv, open = false): RatingEstimate | null {
     try {
-        return estimateRatings({ table: st.table, rideType: st.rideType, pieces, train, vehicleObject: rideVehicleId.get(st.rideId), liftHillSpeed: st.liftHillSpeed, env, carsPerTrain: train?.cars });
+        return estimateRatings({ table: st.table, rideType: st.rideType, pieces, train, vehicleObject: rideVehicleId.get(st.rideId), liftHillSpeed: st.liftHillSpeed, env, carsPerTrain: train?.cars, open });
     } catch {
         return null;
     }
@@ -1180,6 +1181,37 @@ function maxDropThatFits(
 }
 
 /**
+ * Première chute du circuit finie par ce plan (macro drop) qui pourrait descendre d'au moins DROP_SLACK + 1 niveaux de
+ * plus ici (terrain, circuit, autres attractions, bounds) : hauteur la plus grande qui tient. null sinon.
+ */
+function deeperFirstDrop(
+    st: CoasterState,
+    env: TrackEnv,
+    occ: Occupancy,
+    plan: Macro[],
+    pieces: PlannedPiece[],
+    bounds?: TrackBounds,
+): { macro: number; height: number; asked: number; endLevel: number } | null {
+    if (!st.cursor || firstDrop(st.table, st.pieces)?.complete) return null;
+    const fd = firstDrop(st.table, [...st.pieces, ...pieces]);
+    if (!fd?.complete || fd.end <= st.pieces.length) return null;
+    const last = pieces[fd.end - 1 - st.pieces.length];
+    const mi = last?.macro;
+    const m = mi !== undefined ? plan[mi] : undefined;
+    if (mi === undefined || !m || m.op !== "drop") return null;
+    let best = 0;
+    for (let h = m.height + 1; h <= m.height + 60; h++) {
+        const trial = plan.slice(0, mi + 1).map((x, i) => (i === mi ? { ...m, height: h } : x));
+        const c = compileMacros(st.table, st.ride, st.cursor, trial);
+        if (c.errors.length) continue;
+        if (!checkPieces(st, env, st.cursor, c.pieces, occ.clone(), bounds).length) best = h;
+    }
+    if (best <= m.height + DROP_SLACK) return null;
+    const end = endPose(last, st.table.require(last.type));
+    return { macro: mi, height: best, asked: m.height, endLevel: end.z / 16 };
+}
+
+/**
  * Refuse les freins de bloc posés entre la station et le premier lift (`blockBrakesBeforeLift`), dryRun compris, sauf
  * au pied du lift avec assez de piste pour que le train arrêté sorte de la station.
  */
@@ -1320,7 +1352,12 @@ const zMacro = z.discriminatedUnion("op", [
         speed: z.number().int().min(1).max(30).optional().describe("Consigne (comme brakes) ; vitesse cible = consigne × BoosterSpeedFactor / 2, en unités de 2,25 mph. Défaut 20."),
     }),
     z.object({ op: z.literal("climb"), height: z.number().int().min(1).max(40), steep: z.boolean().optional() }),
-    z.object({ op: z.literal("drop"), height: z.number().int().min(1).max(60), steep: z.boolean().optional() }),
+    z.object({
+        op: z.literal("drop"),
+        height: z.number().int().min(1).max(60),
+        steep: z.boolean().optional(),
+        turn: zSide.optional().describe("Chute raide qui tourne de 90° (virage d'1 tuile à 60°) au milieu de la partie à 60° ; steep implicite. 9 niveaux au moins en bois."),
+    }),
     z.object({
         op: z.literal("hill"),
         height: z.number().int().min(1).max(30).describe("Colline : monte puis redescend de height niveaux (airtime, freine le train avant un élément)."),
@@ -1395,7 +1432,7 @@ const zMacro = z.discriminatedUnion("op", [
 
 const MACRO_DOC =
     "Macros : straight{length} ; lift{height,steep?} (montée à chaîne droite, en niveaux) ; launch{height} (montée motorisée poweredLift, propulse le train : remplace le lift sur les types qui l'ont, ex. twister) ; booster{length,speed?} (accélère sur le plat jusqu'à la vitesse cible) ; climb{height,steep?} (montée sans chaîne, sur l'élan) ; " +
-    "drop{height,steep?} ; hill{height,steep?} (colline : monte puis redescend, freine le train et donne de l'airtime) ; turn{dir:left|right,size:small|medium|large,banked?,quarters?,slope:flat|up|down|steep_up|steep_down} ; " +
+    "drop{height,steep?,turn?:left|right} (turn : chute raide qui tourne de 90° en plongeant, d'un seul tenant à 60°) ; hill{height,steep?} (colline : monte puis redescend, freine le train et donne de l'airtime) ; turn{dir:left|right,size:small|medium|large,banked?,quarters?,slope:flat|up|down|steep_up|steep_down} ; " +
     "helix{dir,quarters,down?,size:small|large} ; inversion{kind:loop|immelmann|dive_loop|corkscrew|zero_g_roll|barrel_roll,dir,size?:small|medium|large} " +
     "(inversion complète, entrée et sortie à l'endroit ; sans size, la plus grande disponible, qui demande le plus d'élan : une boucle de bois large ou medium cale sous ~80 km/h, " +
     "la boucle verticale size: 'small' des designs RCT2 passe à ~65 km/h, par exemple après block_brakes et une descente raide de 8 niveaux) ; loop{dir} (petite boucle verticale) ; s_bend{dir} ; " +
@@ -1403,7 +1440,7 @@ const MACRO_DOC =
     "quarter_loop{exit:corkscrew|large_corkscrew|half_loop|medium_half_loop|large_half_loop|barrel_roll|zero_g_roll|dive,dir,height?,turn?} (montée verticale, quart de boucle sur le dos, sortie à l'endroit) ; " +
     "vertical_drop{height,turn?} (chute verticale ; height = chute totale, entrée à 60° et ressource comprises : 18 niveaux au moins depuis le plat). " +
     "brakes{length,speed?} ; block_brakes (après le premier lift ; avant lui, seulement juste avant lift, avec la longueur du train depuis la station ; un au bout des freins d'arrivée en gare, les autres espacés, jamais deux à la suite) ; photo ; level (revient à plat) ; piece{name,chain?} (pièce brute, nom TrackElemType). " +
-    "Les transitions de pente et d'inclinaison sont insérées automatiquement. Rayon et vitesse : turn small et helix small seulement à basse vitesse " +
+    "Les transitions de pente et d'inclinaison sont insérées automatiquement ; une chute (drop) qui suit une pente déjà descendante (turn steep_down, autre drop) la continue sans repasser à plat (height à un demi-niveau près). Rayon et vitesse : turn small et helix small seulement à basse vitesse " +
     "(fin de parcours) ; après une grande chute, turn medium/large banked, helix large, ou un virage raide slope steep_down.";
 
 // ---------------------------------------------------------------------------
@@ -1750,7 +1787,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     warnings,
                     next_hints: [
                         `coaster_build_plan { ride: ${rideId}, close: false, plan: [{op:'straight',length:2},{op:'lift',height:${liftH}},{op:'drop',height:${liftH},steep:true}] } (dryRun d'abord), ` +
-                            "puis coaster_search_section pour la fin du circuit. Pour tourner au sommet du lift, tourne en descendant (turn { slope: 'down' }) : le train y roule au pas.",
+                            "puis coaster_search_section pour la fin du circuit. Pour tourner au sommet du lift, tourne en descendant : drop { height, turn: 'left'|'right' } (chute raide qui tourne de 90°, essaie les deux sens) ou turn { slope: 'down' } ; à plat, le train y roule au pas.",
                         `Inversions possibles pour ce type : ${availableInversions(table, ride).join(", ") || "aucune"} (macro inversion).`,
                     ],
                 },
@@ -1903,6 +1940,12 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     .boolean()
                     .default(false)
                     .describe("Pose même si l'excitation estimée est sous minExcitement − 0,4, ou si la première chute est trop lente pour elle (seulement si l'utilisateur a abandonné l'objectif)."),
+                shortDrop: z
+                    .boolean()
+                    .default(false)
+                    .describe(
+                        "Pose une première chute moins haute que la plus haute qui tient (PREMIÈRE CHUTE PAS AU PLUS BAS) : seulement si l'utilisateur veut une chute plus courte, ou pour le plan d'un repli de coaster_search_section.",
+                    ),
                 trains: zTrains,
                 dryRun: zDryRun,
             },
@@ -1979,6 +2022,35 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                             ? "Reste dans bounds : tourne vers l'intérieur de l'emprise, passe au-dessus ou au-dessous du circuit existant (écart de 2 à 3 niveaux suffit), ou raccourcis l'élément."
                             : "Change l'ordre ou le sens des virages, monte plus haut pour passer au-dessus, ou choisis une zone dégagée (get_region_map)."),
                 });
+            }
+            // Première chute arrêtée au-dessus du plus bas possible (« Timber Ridge », Haiku, 10 octobre 2026 : drop de 17
+            // niveaux depuis le sommet du lift, 24 tenaient jusqu'au sol, 76 km/h au bas au lieu de 98).
+            if (!args.shortDrop) {
+                const deeper = deeperFirstDrop(st, env, occBefore, args.plan as Macro[], compiled.pieces, bounds);
+                if (deeper) {
+                    const model = forRide(speedModels(ctx).get(st.rideType), st);
+                    const train = await rideTrain(ctx, st.rideId);
+                    const kmh = (plan: Macro[]) => {
+                        const c = compileMacros(st.table, st.ride, st.cursor!, plan);
+                        return c.errors.length ? null : firstDropSpeed(st.table, st.ride, [...st.pieces, ...c.pieces], (p) => simulate(model, st.table, p as TrackPieceInfo[], model.stationSpeed, train))?.kmh ?? null;
+                    };
+                    const plan = args.plan as Macro[];
+                    const asked = kmh(plan.slice(0, deeper.macro + 1));
+                    const best = kmh(plan.slice(0, deeper.macro + 1).map((x, i) => (i === deeper.macro ? { ...x, height: deeper.height } : x)) as Macro[]);
+                    const speeds = asked !== null && best !== null ? ` : ${best} km/h de pointe au lieu de ${asked}` : "";
+                    toolError(
+                        "INVALID_PARAMS",
+                        `PREMIÈRE CHUTE PAS AU PLUS BAS : drop { height: ${deeper.asked} } (macro ${deeper.macro}) s'arrête au niveau ${deeper.endLevel}, alors qu'une chute de ${deeper.height} niveaux tient ici (jusqu'au niveau ${deeper.endLevel - (deeper.height - deeper.asked)})${speeds}. ` +
+                            "La vitesse de la première chute donne l'élan de tout le circuit : inversions plus grandes, collines, vitesse moyenne, qui font l'excitation.",
+                        {
+                            details: { macro: deeper.macro, asked: deeper.asked, deepest: deeper.height, ...(asked !== null && best !== null ? { askedKmh: asked, deepestKmh: best } : {}) },
+                            hint:
+                                `Refais le plan avec drop { height: ${deeper.height} } à la macro ${deeper.macro}, puis cherche la suite depuis le bas de la chute (coaster_search_section) : ` +
+                                "au pied d'une grande chute, une grande boucle (inversion { kind: 'loop', size: 'large' ou 'medium' }) ou une colline prend la vitesse. " +
+                                "shortDrop: true seulement si l'utilisateur veut une chute plus courte.",
+                        },
+                    );
+                }
             }
             let pocket: string | null = null;
             // Plan ouvert qui finit face à un obstacle : refusé tout de suite, la suite (recherche, fermeture) ne pourrait pas en partir.
@@ -2434,6 +2506,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     stationLaunch: STATION_LAUNCH_MODES.has(st.mode),
                     trainTiles: train ? trainLength(train) : undefined,
                     estimate: (all) => estimateFor(st, all, train, env),
+                    estimatePartial: (all) => estimateFor(st, all, train, env, true),
                     minExcitement: minExc !== undefined ? minExc - ESTIMATE_SLACK : undefined,
                     targetExcitement: minExc,
                     energyK: model.K,
@@ -2487,7 +2560,19 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             };
             const t0 = Date.now();
             // Repli (COASTER_SPACE 7 septdecies) : une part du temps est gardée pour reculer si le bout est une poche.
-            const mainMs = args.backtrack ? Math.max(2000, Math.round(args.timeMs * BACKTRACK_MAIN_SHARE)) : args.timeMs;
+            const options = args.backtrack
+                ? retreatOptions(st.table, st.ride, st.pieces, env, st.occupancy.clearance, {
+                      bounds,
+                      zMin,
+                      dropMin: target?.firstDrop ? Math.floor(target.firstDrop.height * DROP_MIN) : undefined,
+                  })
+                      .filter((o) => !(target && !args.allowBelowReference && firstDropProblems(target, firstDrop(st.table, o.prefix)).length))
+                      // Une chute refaite moins haute ne doit pas perdre la vitesse qu'exige l'excitation.
+                      .filter((o) => minExc === undefined || !liftSpeedProblem(st, o.prefix, minExc, model, train))
+                : [];
+            // Sans repli possible (début qui finit au sommet du lift…), tout le temps va au bout actuel : la part gardée
+            // pour reculer était perdue (Timber Ridge, 10 octobre 2026 : 48 s sur 120 cherchées).
+            const mainMs = options.length ? Math.max(2000, Math.round(args.timeMs * BACKTRACK_MAIN_SHARE)) : args.timeMs;
             const res = runSearch(st.pieces, st.cursor!, st.occupancy, mainMs);
             const first = toVariants(st.pieces, res);
             let variants = first.list;
@@ -2495,15 +2580,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
             const judged = { length: first.count };
             let retreat: { undo: number; label: string; macros: Macro[]; tried: number } | null = null;
             let retreatTried = 0;
-            if (!variants.length && !modsMiss && !res.approachBlocked && args.backtrack) {
-                const options = retreatOptions(st.table, st.ride, st.pieces, env, st.occupancy.clearance, {
-                    bounds,
-                    zMin,
-                    dropMin: target?.firstDrop ? Math.floor(target.firstDrop.height * DROP_MIN) : undefined,
-                })
-                    .filter((o) => !(target && !args.allowBelowReference && firstDropProblems(target, firstDrop(st.table, o.prefix)).length))
-                    // Une chute refaite moins haute ne doit pas perdre la vitesse qu'exige l'excitation.
-                    .filter((o) => minExc === undefined || !liftSpeedProblem(st, o.prefix, minExc, model, train));
+            if (!variants.length && !modsMiss && !res.approachBlocked && options.length) {
                 // Deux tours : chaque repli a d'abord une courte part (une hauteur sans issue peut épuiser son faisceau
                 // lentement), puis ceux arrêtés par le temps se partagent le reste.
                 let pending = options;
@@ -2553,7 +2630,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                         ? dropShort
                         : retreat
                         ? `REPLI NÉCESSAIRE : aucune fin depuis le bout actuel (${firstFail}). En retirant ${retreat.undo} pièce(s) (${retreat.label}) : ${variants.length} variante(s) ; meilleure : ${variants[0].lengthTiles} tuiles de piste, contour ${variants[0].outline} (${variants[0].holes} de trous), ${variants[0].footprint}. ` +
-                          `Fais : 1) coaster_undo { ride: ${st.rideId}, count: ${retreat.undo} } ; 2) coaster_build_plan { ride: ${st.rideId}, plan: variants[0].plan, close: true } (le plan commence par la nouvelle chute).`
+                          `Fais : 1) coaster_undo { ride: ${st.rideId}, count: ${retreat.undo} } ; 2) coaster_build_plan { ride: ${st.rideId}, plan: variants[0].plan, close: true, shortDrop: true } (le plan commence par la nouvelle chute).`
                         : variants.length
                         ? `${variants.length} variante(s) en ${Math.round(res.elapsedMs / 1000)} s (${res.expansions} éléments essayés, ${res.closures} fermetures) ; meilleure : contour ${variants[0].outline} tuiles (${variants[0].holes} de trous), ${variants[0].lengthTiles} tuiles de piste, ${variants[0].footprint}${excNote(variants[0])}.`
                         : modsMiss
@@ -2581,7 +2658,7 @@ export function registerCoasterTools(server: McpServer, ctx: ToolContext): void 
                     next_hints: retreat
                         ? [
                               `coaster_undo { ride: ${st.rideId}, count: ${retreat.undo} } (retire la fin qui mène à la poche ; rien d'autre à défaire)`,
-                              `coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, dryRun: true } puis sans dryRun ; ensuite coaster_test.`,
+                              `coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, shortDrop: true, dryRun: true } puis sans dryRun ; ensuite coaster_test.`,
                           ]
                         : variants.length
                         ? [`coaster_build_plan { ride: ${st.rideId}, plan: <variants[0].plan>, close: true, dryRun: true } puis sans dryRun ; ensuite coaster_test et coaster_compare.`]
