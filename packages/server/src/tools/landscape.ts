@@ -14,7 +14,7 @@ import {
     type VertexGrid,
 } from "../planners/heightmap.js";
 import type { InverseOp } from "../state/journal.js";
-import { BUDGET, defineTool, result, toolError, zDryRun, type ToolContext } from "./context.js";
+import { BUDGET, defineTool, requireLandscape, result, toolError, zDryRun, type ToolContext } from "./context.js";
 import { chunks, groupFailures, mergeBulk } from "./helpers.js";
 
 const MAX_SHAPE_TILES = 64 * 64;
@@ -70,6 +70,7 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
         {
             title: "Modeler le terrain",
             description:
+                "Relief verrouillé par défaut : sans session_set_landscape (accord de l'utilisateur), seul dryRun est permis. " +
                 "Terraformage de haut niveau, calculé sur les coins des tuiles : les pentes produites sont toujours valides (au plus une marche " +
                 "par bord de tuile) et le bord de la zone n'est jamais modifié (raccord propre avec l'extérieur). Les tuiles portant un chemin, " +
                 "une attraction ou une entrée ne bougent pas. Opérations :\n" +
@@ -97,6 +98,7 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
             },
         },
         async (a) => {
+            requireLandscape(ctx, "terrain_shape", a.dryRun);
             let area: TileRect;
             let core: TileRect | null = null;
             if (a.op === "hill" || a.op === "valley") {
@@ -196,6 +198,7 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
         {
             title: "Créer un lac",
             description:
+                "Relief verrouillé par défaut : sans session_set_landscape (accord de l'utilisateur), seul dryRun est permis. " +
                 "Creuse un bassin dans un rectangle (forme ellipse par défaut, ou rect), avec des berges en pente douce vers l'intérieur, puis le " +
                 "remplit d'eau. level = niveau de la surface de l'eau (défaut : le plus bas du pourtour, pour que l'eau ne déborde pas). depth = " +
                 "profondeur au centre en niveaux. Les tuiles occupées (chemins, attractions) ne sont pas creusées. Le bord du rectangle sert de " +
@@ -212,6 +215,7 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
             },
         },
         async ({ x1, y1, x2, y2, shape, depth, level, dryRun }) => {
+            requireLandscape(ctx, "water_create_lake", dryRun);
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             if (rect.x2 - rect.x1 < 2 || rect.y2 - rect.y1 < 2) toolError("INVALID_PARAMS", "Lac trop petit (3×3 tuiles au minimum).");
             if (rectArea(rect) > MAX_SHAPE_TILES) toolError("INVALID_PARAMS", `Zone trop grande (max ${MAX_SHAPE_TILES} tuiles).`);

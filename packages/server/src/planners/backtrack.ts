@@ -3,6 +3,7 @@ import { firstDrop } from "./target.js";
 import {
     Occupancy,
     blockProblem,
+    groundMix,
     boundsProblem,
     compileMacros,
     endPose,
@@ -108,6 +109,7 @@ function fitsAfter(table: SegmentTable, added: Piece[], occ: Occupancy, env: Tra
         const el = pieceElements(p, table.require(p.type));
         if (pending.conflict(el)) return false;
         for (const e of el) if (e.z < zMin || blockProblem(env, e) || (bounds && boundsProblem(bounds, e))) return false;
+        if (groundMix(env, el)) return false;
         pending.add(prev);
         prev = el;
     }

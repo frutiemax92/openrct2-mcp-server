@@ -112,6 +112,8 @@ for (const f of rtdFiles) {
         const body = m[2];
         const category = /\.Category\s*=\s*RideCategory::(\w+)/.exec(body)?.[1] ?? null;
         const start = /\.StartTrackPiece\s*=\s*TrackElemType::(\w+)/.exec(body)?.[1] ?? null;
+        // Style du premier TrackDrawerEntry : choisit la fonction de dessin (ride/TrackStyle.cpp, section 2b).
+        const trackStyle = /\.trackStyle\s*=\s*TrackStyle::(\w+)/.exec(body)?.[1] ?? null;
         // Premier TrackDrawerEntry : pièces constructibles (enabled) et pièces dessinables par cheat (extra).
         // trackplace ne vérifie pas les groupes (TrackPlaceAction.cpp) : le serveur doit le faire (SPEC 12.2).
         const groupsOf = (key) => {
@@ -135,7 +137,7 @@ for (const f of rtdFiles) {
             // Masse maximale d'un train (MaxMass << 8, Ride::UpdateMaxVehicles) : borne le nombre de voitures.
             maxMass: Number(/\.MaxMass\s*=\s*(\d+)/.exec(body)?.[1] ?? 0),
         };
-        rtdInfo.set(m[1], { category, start, enabled: groupsOf("enabledTrackGroups"), extra: groupsOf("extraTrackGroups"), power });
+        rtdInfo.set(m[1], { category, start, trackStyle, enabled: groupsOf("enabledTrackGroups"), extra: groupsOf("extraTrackGroups"), power });
     }
 }
 
@@ -166,10 +168,119 @@ for (const m of table.matchAll(/\/\*\s*RIDE_TYPE_(\w+)\s*\*\/\s*(\w+),/g)) {
         category: info.category,
         startTrackPiece: info.start ? trackElemValue.get(info.start) ?? null : null,
         startTrackPieceName: info.start,
+        trackStyle: info.trackStyle,
         trackGroups: info.enabled.map(groupValue),
         extraTrackGroups: info.extra.map(groupValue),
         ...info.power,
     });
+}
+
+// ---------------------------------------------------------------------------
+// 2b. Pièces dessinées par chaque style de piste (SPEC F37)
+// ---------------------------------------------------------------------------
+// Un groupe activé ne garantit pas le dessin : diagUp60ToFlat est rangé dans diagSlopeSteepUp, que le bois active,
+// mais WoodenRollerCoaster.cpp n'a pas de sprite pour lui (trackplace le pose quand même, invisible). On lit donc le
+// switch de chaque GetTrackPaintFunction* : `case` → dessiné, sauf `return TrackPaintFunctionDummy` ; `default:` →
+// fonction déléguée, moins les cas explicites ; `if (!IsCsgLoaded()) return F(trackType)` → intersection des deux
+// branches (dessiné quelle que soit la présence de RCT1).
+
+const trackStyleText = readFileSync(join(src, "ride", "TrackStyle.h"), "utf8");
+const trackStyleNames = [...(/enum class TrackStyle[^{]*\{([\s\S]*?)\};/.exec(trackStyleText)[1]).matchAll(/^\s*(\w+)\s*,/gm)]
+    .map((m) => m[1])
+    .filter((n) => n !== "count");
+const styleMapText = readFileSync(join(src, "ride", "TrackStyle.cpp"), "utf8");
+const styleMapBody = /kPaintFunctionMap\[\]\s*=\s*\{([\s\S]*?)\};/.exec(styleMapText)[1];
+const styleGetter = new Map();
+for (const m of styleMapBody.matchAll(/^\s*([\w:]+)\s*,\s*\/\/\s*(\w+)/gm)) styleGetter.set(m[2], m[1]);
+
+const paintTexts = walk(join(src, "paint", "track"))
+    .filter((f) => f.endsWith(".cpp"))
+    .map((f) => readFileSync(f, "utf8"));
+const getterDefs = [];
+for (const text of paintTexts) {
+    const re = /TrackPaintFunction\s+((?:\w+::)*)(\w+)\s*\(\s*(?:const\s+)?(?:OpenRCT2::)?TrackElemType\s+trackType\s*\)\s*\{/g;
+    for (const m of text.matchAll(re)) {
+        let depth = 1;
+        let i = m.index + m[0].length;
+        while (depth > 0 && i < text.length) {
+            if (text[i] === "{") depth++;
+            else if (text[i] === "}") depth--;
+            i++;
+        }
+        const namespaces = [...text.slice(0, m.index).matchAll(/namespace\s+([\w:]+)/g)].flatMap((n) => n[1].split("::"));
+        getterDefs.push({ name: m[2], qualifiers: [...m[1].split("::").filter(Boolean), ...namespaces], body: text.slice(m.index + m[0].length, i - 1) });
+    }
+}
+function findGetter(qualified) {
+    const parts = qualified.split("::");
+    const name = parts.pop();
+    const found = getterDefs.filter((d) => d.name === name && parts.every((q) => q === "OpenRCT2" || d.qualifiers.includes(q)));
+    if (found.length !== 1) throw new Error(`Fonction de dessin ${qualified} : ${found.length} définitions`);
+    return found[0];
+}
+const DUMMY_RETURN = /^(TrackPaintFunctionDummy|nullptr)$/;
+const DELEGATE_RETURN = /^([\w:]+)\s*(?:<[^<>]*>)?\s*\(\s*trackType\s*\)$/;
+const drawnCache = new Map();
+function drawnPieces(qualified, visiting = new Set()) {
+    if (drawnCache.has(qualified)) return drawnCache.get(qualified);
+    if (visiting.has(qualified)) return new Set(); // Looping ↔ LIM : chacun délègue à l'autre ses cas manquants.
+    visiting.add(qualified);
+    const { body } = findGetter(qualified);
+    const switchAt = body.search(/\bswitch\s*\(\s*trackType\s*\)/);
+    const head = switchAt < 0 ? body : body.slice(0, switchAt);
+    const alt = /if\s*\([^)]*\)\s*\{?\s*return\s+([^;]+);/.exec(head);
+    const drawn = new Set();
+    const explicit = new Set();
+    let fallback = null;
+    if (switchAt < 0) {
+        fallback = DELEGATE_RETURN.exec(/return\s+([^;]+);/.exec(body)[1].trim())?.[1] ?? null;
+    } else {
+        let pending = [];
+        for (const m of body.slice(switchAt).matchAll(/case\s+(?:OpenRCT2::)?TrackElemType::(\w+)\s*:|(default)\s*:|return\s+([^;]+);/g)) {
+            if (m[1] || m[2]) {
+                pending.push(m[1] ?? "default");
+                continue;
+            }
+            if (!pending.length) continue;
+            const expr = m[3].trim();
+            for (const label of pending) {
+                if (label === "default") fallback = DELEGATE_RETURN.exec(expr)?.[1] ?? null;
+                else {
+                    explicit.add(label);
+                    if (!DUMMY_RETURN.test(expr)) drawn.add(label);
+                }
+            }
+            pending = [];
+        }
+    }
+    if (fallback) for (const p of drawnPieces(fallback, visiting)) if (!explicit.has(p)) drawn.add(p);
+    let result = drawn;
+    if (alt && switchAt >= 0) {
+        const altName = DELEGATE_RETURN.exec(alt[1].trim())?.[1];
+        if (altName) {
+            const other = drawnPieces(altName, visiting);
+            result = new Set([...drawn].filter((p) => other.has(p)));
+        }
+    }
+    visiting.delete(qualified);
+    drawnCache.set(qualified, result);
+    return result;
+}
+const trackStylePieces = {};
+for (const style of trackStyleNames) {
+    const getter = styleGetter.get(style);
+    if (!getter) throw new Error(`TrackStyle sans fonction de dessin : ${style}`);
+    if (getter === "DummyGetter") {
+        trackStylePieces[style] = [];
+        continue;
+    }
+    trackStylePieces[style] = [...drawnPieces(getter)]
+        .map((n) => {
+            const v = trackElemValue.get(n);
+            if (v === undefined) throw new Error(`TrackElemType inconnu dans ${getter} : ${n}`);
+            return v;
+        })
+        .sort((a, b) => a - b);
 }
 
 // ---------------------------------------------------------------------------
@@ -323,7 +434,17 @@ for (const f of tedFiles) {
     const text = readFileSync(f, "utf8").replace(/\/\/[^\n]*/g, "");
     for (const m of text.matchAll(/SequenceDescriptor\s+(k\w+)\s*=\s*\{\s*\.clearance\s*=\s*\{\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(-?\d+)\s*,\s*(\d+)\s*,([^\n]*)/g)) {
         // Le reste de la ligne porte les ClearanceFlags (isVertical : dégagement plafonné à 24 au-dessus du bloc).
-        seqClearance.set(m[1], { x: Number(m[2]), y: Number(m[3]), z: Number(m[4]), clearanceZ: Number(m[5]), vertical: /ClearanceFlag::isVertical/.test(m[6]) });
+        // Quarts de tuile ({ base, z }) : quarts occupés et quarts relevés, pour le contrôle du relief (MapCanConstructWithClearAt).
+        const q = /^\s*\{\s*(0b[01]+|\d+)\s*,\s*(0b[01]+|\d+)\s*\}/.exec(m[6]);
+        if (!q) throw new Error(`Quarts de tuile illisibles : ${m[1]}`);
+        seqClearance.set(m[1], {
+            x: Number(m[2]),
+            y: Number(m[3]),
+            z: Number(m[4]),
+            clearanceZ: Number(m[5]),
+            quarterTile: Number(q[1]) | (Number(q[2]) << 4),
+            vertical: /ClearanceFlag::isVertical/.test(m[6]),
+        });
     }
     for (const m of text.matchAll(/constexpr\s+auto\s+(kTED\w+)\s*=\s*TrackElementDescriptor\s*\{/g)) {
         const body = braced(text, text.indexOf("{", m.index + m[0].length - 1));
@@ -381,12 +502,23 @@ writeFileSync(
 writeFileSync(
     join(genDir, "rideTypes.ts"),
     banner +
-        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */\n    poweredLiftAcceleration: number;\n    /** Poussée des boosters, sous leur vitesse cible. */\n    boosterAcceleration: number;\n    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */\n    boosterSpeedFactor: number;\n    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */\n    lsmOnFlat: boolean;\n    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */\n    liftMinSpeed: number;\n    liftMaxSpeed: number;\n    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */\n    launchAccelerationFactor: number;\n    /** Masse maximale d'un train ÷ 256 (MaxMass, Ride::UpdateMaxVehicles). */\n    maxMass: number;\n}\n\n" +
+        "export interface RideTypeInfo {\n    rideType: number;\n    name: string;\n    category: string | null;\n    startTrackPiece: number | null;\n    startTrackPieceName: string | null;\n    /** Style de dessin (TrackStyle) : clé de TRACK_STYLE_PIECES. */\n    trackStyle: string | null;\n    /** Groupes de pièces constructibles (TrackGroup). */\n    trackGroups: number[];\n    /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */\n    extraTrackGroups: number[];\n    /** Poussée des pièces poweredLift (LegacyBoosterSettings, << 16 par sous-position). */\n    poweredLiftAcceleration: number;\n    /** Poussée des boosters, sous leur vitesse cible. */\n    boosterAcceleration: number;\n    /** Vitesse cible d'un booster = consigne × boosterSpeedFactor / 2. */\n    boosterSpeedFactor: number;\n    /** Le plat pousse comme un poweredLift (RtdFlag::hasLsmBehaviourOnFlat). */\n    lsmOnFlat: boolean;\n    /** Vitesse de chaîne à la création (LiftData.minimum_speed, RideCreateAction) et maximale. */\n    liftMinSpeed: number;\n    liftMaxSpeed: number;\n    /** Décalage de l'accélération d'un lancement depuis la station (BoosterSettings.AccelerationFactor). */\n    launchAccelerationFactor: number;\n    /** Masse maximale d'un train ÷ 256 (MaxMass, Ride::UpdateMaxVehicles). */\n    maxMass: number;\n}\n\n" +
         "export const RIDE_TYPES: readonly RideTypeInfo[] = " +
         JSON.stringify(rideTypes, null, 4) +
         ";\n\n/** Valeurs de `TrackGroup` (ride/ted/TrackGroup.h). */\nexport const TRACK_GROUPS = " +
         JSON.stringify(trackGroups, null, 4) +
         " as const;\n",
+);
+
+writeFileSync(
+    join(genDir, "trackPaint.ts"),
+    banner +
+        "/**\n * Pièces (TrackElemType) que la fonction de dessin de chaque style sait dessiner (paint/track/**). Une pièce d'un\n * groupe activé mais absente d'ici est posée invisible par trackplace (SPEC F37).\n */\n" +
+        "export const TRACK_STYLE_PIECES: Readonly<Record<string, readonly number[]>> = {\n" +
+        Object.entries(trackStylePieces)
+            .map(([style, pieces]) => `    ${style}: [${pieces.join(", ")}],\n`)
+            .join("") +
+        "};\n",
 );
 
 writeFileSync(
@@ -433,6 +565,10 @@ writeFileSync(
         ";\n\n/** Blocs verticaux (ClearanceFlag::isVertical), par type de pièce : indices de séquence. */\n" +
         "export const TRACK_BLOCK_VERTICAL: Readonly<Record<number, readonly number[]>> = " +
         JSON.stringify(Object.fromEntries(blockClearance.map((b, t) => [t, b.flatMap((c, i) => (c.vertical ? [i] : []))]).filter(([, v]) => v.length))) +
+        ";\n\n/**\n * Quarts de tuile de chaque bloc (SequenceClearance.quarterTile, direction 0) : bits 0-3 = quarts occupés (N, E, S, O),\n" +
+        " * bits 4-7 = quarts relevés (zQuarter), où le relief peut monter jusqu'à 2 niveaux au-dessus de la base du bloc.\n */\n" +
+        "export const TRACK_BLOCK_QUARTERS: readonly (readonly number[])[] = " +
+        JSON.stringify(blockClearance.map((b) => b.map((c) => c.quarterTile))) +
         ";\n",
 );
 
@@ -579,6 +715,12 @@ if (objectRoot) {
             rear: tail[0] ?? 255,
             defaultCar: p.defaultCar ?? 0,
         };
+        // Multiplicateurs de note de l'objet (RideObject.cpp : « ratingMultipler » avant le renommage) et drapeaux
+        // limitAirTimeBonus / hasShelter : l'estimation des notes avant essai (planners/estimate.ts) en a besoin.
+        const rm = p.ratingMultiplier ?? p.ratingMultipler;
+        if (rm) entry.ratings = { excitement: rm.excitement ?? 0, intensity: rm.intensity ?? 0, nausea: rm.nausea ?? 0 };
+        if (p.limitAirTimeBonus) entry.limitAirTimeBonus = true;
+        if (p.hasShelter) entry.covered = true;
         rideVehicles[obj.id] = entry;
         const dat = /^[0-9A-Fa-f]{8}\|(.{8})\|/.exec(obj.originalId ?? "")?.[1].trim();
         if (dat && !rideVehicles[dat]) rideVehicles[dat] = entry;

@@ -56,16 +56,34 @@ export interface SpaceRect {
     h: number;
 }
 
+/**
+ * Contour du circuit vu de dessus : tuiles de piste plus les trous qu'elles enferment (tuiles sans piste qu'on ne peut
+ * pas rejoindre depuis l'extérieur sans traverser la piste). C'est la mesure de compacité : un circuit qui laisse de
+ * grands trous (Rolling Thunder) a un contour bien plus grand que ses tuiles de piste ; un circuit serré (Whiteout) non.
+ */
+export interface SpaceOutline {
+    /** Tuiles dans le contour : piste + trous. */
+    area: number;
+    /** Tuiles sans piste enfermées par la piste. */
+    holes: number;
+    /** Nombre de trous distincts, et taille du plus grand (tuiles). */
+    holeCount: number;
+    largestHole: number;
+}
+
 export interface SpaceProfile {
     /** Circuit fermé : les indices de pièces se comptent modulo la longueur pour le voisinage. */
     closed: boolean;
+    /** Rectangle englobant (sert à bounds et au choix du site, pas à la compacité). */
     footprint: { x1: number; y1: number; x2: number; y2: number; w: number; h: number; area: number };
+    /** Contour vu de dessus : la compacité du circuit. */
+    outline: SpaceOutline;
     trackTiles: number;
-    /** Tuiles de piste distinctes / tuiles de l'emprise (0 à 1). */
+    /** Tuiles de piste distinctes / tuiles du contour (0 à 1) : 1 = aucun trou. */
     coverage: number;
     /** Tuiles portant au moins deux pièces non voisines. */
     stackedTiles: number;
-    /** Plus grand rectangle de l'emprise sans piste, et sa part de l'emprise (0 à 1). */
+    /** Plus grand rectangle sans piste à l'intérieur du contour (dans un trou), et sa part du contour (0 à 1). */
     largestVoid: (SpaceRect & { share: number }) | null;
     /** Éléments hors station et freins, dans l'ordre du parcours. */
     elements: ElementSpace[];
@@ -118,6 +136,58 @@ export function isClosed(table: SegmentTable, pieces: Piece[]): boolean {
 }
 
 const key = (x: number, y: number): string => `${x},${y}`;
+
+/**
+ * Trous d'une grille w×h (`filled(x, y)` : piste) : tuiles vides qu'aucun chemin 4-connexe de tuiles vides ne relie au
+ * bord de la grille. Une piste en diagonale (tuiles qui se touchent par un coin) ferme le passage. Renvoie un masque
+ * (1 = trou) et les tailles des trous.
+ */
+export function enclosedHoles(w: number, h: number, filled: (x: number, y: number) => boolean): { mask: Uint8Array; sizes: number[] } {
+    // 0 vide, 1 piste, 2 extérieur ; puis 3 = trou.
+    const g = new Uint8Array(w * h);
+    for (let y = 0; y < h; y++) for (let x = 0; x < w; x++) if (filled(x, y)) g[y * w + x] = 1;
+    const queue: number[] = [];
+    const seed = (i: number) => {
+        if (g[i] === 0) {
+            g[i] = 2;
+            queue.push(i);
+        }
+    };
+    for (let x = 0; x < w; x++) {
+        seed(x);
+        seed((h - 1) * w + x);
+    }
+    for (let y = 0; y < h; y++) {
+        seed(y * w);
+        seed(y * w + w - 1);
+    }
+    const spread = (mark: number, onCell?: () => void) => {
+        while (queue.length) {
+            const i = queue.pop()!;
+            onCell?.();
+            const x = i % w;
+            const next = [x > 0 ? i - 1 : -1, x < w - 1 ? i + 1 : -1, i >= w ? i - w : -1, i < w * (h - 1) ? i + w : -1];
+            for (const j of next)
+                if (j >= 0 && g[j] === 0) {
+                    g[j] = mark;
+                    queue.push(j);
+                }
+        }
+    };
+    spread(2);
+    const sizes: number[] = [];
+    for (let i = 0; i < w * h; i++)
+        if (g[i] === 0) {
+            g[i] = 3;
+            queue.push(i);
+            let n = 0;
+            spread(3, () => n++);
+            sizes.push(n);
+        }
+    const mask = new Uint8Array(w * h);
+    for (let i = 0; i < w * h; i++) if (g[i] === 3) mask[i] = 1;
+    return { mask, sizes };
+}
 
 /** Plus grand rectangle sans piste dans la grille w×h (`filled(x, y)`), par histogramme de colonnes vides. */
 export function largestEmptyRect(w: number, h: number, filled: (x: number, y: number) => boolean): SpaceRect | null {
@@ -262,14 +332,19 @@ export function spaceProfile(table: SegmentTable, pieces: Piece[], opts: { close
     let stackedTiles = 0;
     for (const list of cells.values()) if (list.some((a) => list.some((b) => indexDistance(a.i, b.i) > NEIGHBOUR_SPAN))) stackedTiles++;
 
-    const v = area ? largestEmptyRect(w, h, (x, y) => cells.has(key(fp.x1 + x, fp.y1 + y))) : null;
+    // Contour : piste + trous enfermés. Le plus grand vide se cherche dans les trous (hors du contour, ce n'est pas un vide).
+    const holes = area ? enclosedHoles(w, h, (x, y) => cells.has(key(fp.x1 + x, fp.y1 + y))) : { mask: new Uint8Array(0), sizes: [] };
+    const holeTiles = holes.sizes.reduce((a, n) => a + n, 0);
+    const outlineArea = cells.size + holeTiles;
+    const v = holeTiles ? largestEmptyRect(w, h, (x, y) => !holes.mask[y * w + x]) : null;
     return {
         closed,
         footprint: { ...fp, w: Math.max(w, 0), h: Math.max(h, 0), area },
+        outline: { area: outlineArea, holes: holeTiles, holeCount: holes.sizes.length, largestHole: holes.sizes.length ? Math.max(...holes.sizes) : 0 },
         trackTiles: cells.size,
-        coverage: area ? cells.size / area : 0,
+        coverage: outlineArea ? cells.size / outlineArea : 0,
         stackedTiles,
-        largestVoid: v ? { x: fp.x1 + v.x, y: fp.y1 + v.y, w: v.w, h: v.h, share: v.w * v.h / area } : null,
+        largestVoid: v ? { x: fp.x1 + v.x, y: fp.y1 + v.y, w: v.w, h: v.h, share: (v.w * v.h) / outlineArea } : null,
         elements,
         isolated: elements.flatMap((e, i) => (e.isolated ? [i] : [])),
     };
@@ -460,7 +535,8 @@ function elementLine(e: ElementSpace): string {
 export function spaceView(p: SpaceProfile, opts: { elements?: boolean } = {}): Record<string, unknown> {
     const lift = p.elements.find((e) => e.kind === "lift");
     return {
-        footprint: `${p.footprint.w}×${p.footprint.h} (${p.footprint.area} tuiles)`,
+        outline: `${p.outline.area} tuiles dans le contour (${p.trackTiles} de piste, ${p.outline.holes} de trous${p.outline.holeCount ? `, ${p.outline.holeCount} trou(s), le plus grand ${p.outline.largestHole}` : ""})`,
+        footprint: `${p.footprint.w}×${p.footprint.h} (rectangle englobant)`,
         coveragePct: pct(p.coverage),
         stackedTiles: p.stackedTiles,
         largestVoid: p.largestVoid ? `${p.largestVoid.w}×${p.largestVoid.h} en (${p.largestVoid.x},${p.largestVoid.y}), ${pct(p.largestVoid.share)} %` : null,
@@ -493,18 +569,17 @@ export function suggestedBounds(p: SpaceProfile, margin = 0.1): { w: number; h: 
  */
 export function spaceLevers(ride: SpaceProfile, ref: SpaceProfile): string[] {
     const out: string[] = [];
-    const ratio = ref.footprint.area ? ride.footprint.area / ref.footprint.area : 1;
+    const ratio = ref.outline.area ? ride.outline.area / ref.outline.area : 1;
+    if (ratio > 1.1)
+        out.push(
+            `contour ${ride.outline.area} tuiles (${ride.outline.holes} de trous) contre ${ref.outline.area} (${ref.outline.holes} de trous), ${ratio.toFixed(2)} × la référence : ` +
+                "resserre le tracé pour ne pas laisser de trous entre ses parties (vu de dessus)",
+        );
     const sides = [ride.footprint.w, ride.footprint.h].sort((a, b) => b - a);
     const refSides = [ref.footprint.w, ref.footprint.h].sort((a, b) => b - a);
-    if (ratio > 1.1 || sides[0] > refSides[0] * 1.2 || sides[1] > refSides[1] * 1.2) {
-        out.push(
-            `emprise ${ride.footprint.w}×${ride.footprint.h} = ${ride.footprint.area} tuiles, ${ratio.toFixed(2)} × la référence (${ref.footprint.w}×${ref.footprint.h}) : ` +
-                `reconstruis dans bounds ${suggestedBounds(ref).w}×${suggestedBounds(ref).h}`,
-        );
-    }
-    if (ref.coverage - ride.coverage >= 0.05) out.push(`couverture ${pct(ride.coverage)} % contre ${pct(ref.coverage)} % : la piste occupe trop peu de son emprise`);
-    if (ride.stackedTiles < ref.stackedTiles * 0.7)
-        out.push(`tuiles empilées ${ride.stackedTiles} contre ${ref.stackedTiles} : fais passer la seconde moitié sous le lift, sous la première chute et à travers les grandes inversions`);
+    if (sides[0] > refSides[0] * 1.2 || sides[1] > refSides[1] * 1.2)
+        out.push(`rectangle englobant ${ride.footprint.w}×${ride.footprint.h} contre ${ref.footprint.w}×${ref.footprint.h} : reconstruis dans bounds ${suggestedBounds(ref).w}×${suggestedBounds(ref).h}`);
+    if (ref.coverage - ride.coverage >= 0.05) out.push(`couverture ${pct(ride.coverage)} % contre ${pct(ref.coverage)} % : trop de trous dans le contour`);
     const refLift = ref.elements.find((e) => e.kind === "lift");
     const lift = ride.elements.find((e) => e.kind === "lift");
     if (refLift && lift && refLift.shared > 0 && lift.shared < refLift.shared / 2) {
@@ -513,7 +588,7 @@ export function spaceLevers(ride: SpaceProfile, ref: SpaceProfile): string[] {
     }
     if (ride.largestVoid && (!ref.largestVoid || ride.largestVoid.share > ref.largestVoid.share + 0.05)) {
         const v = ride.largestVoid;
-        out.push(`vide ${v.w}×${v.h} en (${v.x},${v.y}), ${pct(v.share)} % de l'emprise (référence : ${ref.largestVoid ? pct(ref.largestVoid.share) : 0} %) : remplis-le (hélice, virages en pente) ou resserre l'emprise`);
+        out.push(`trou ${v.w}×${v.h} en (${v.x},${v.y}), ${pct(v.share)} % du contour (référence : ${ref.largestVoid ? pct(ref.largestVoid.share) : 0} %) : remplis-le (hélice, virages en pente) ou resserre le tracé`);
     }
     if (ride.isolated.length > ref.isolated.length)
         out.push(`éléments isolés ${ride.isolated.length} contre ${ref.isolated.length} : ${ride.isolated.map((i) => `${ride.elements[i].kind} (${ride.elements[i].from}-${ride.elements[i].to})`).join(", ")}`);

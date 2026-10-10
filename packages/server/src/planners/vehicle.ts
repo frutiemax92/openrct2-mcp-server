@@ -253,6 +253,12 @@ export interface ExactResult {
     completed: boolean;
     /** Statistiques du tour en centièmes de G (Ride.maxLateralG, maxPositiveVerticalG, maxNegativeVerticalG), si tables de G. */
     gForces?: { maxLat: number; maxPosVert: number; maxNegVert: number };
+    /**
+     * Mesures d'essai du tour (Vehicle::UpdateMeasurements) : vitesse max et moyenne brutes (vitesse × 65536, moyenne
+     * relevée tous les 32 ticks), segmentTime (relevés non nuls), longueur (Σ ((v + a) >> 10) × 42, >> 16 = mètres),
+     * temps en l'air brut (ticks à G vertical ≤ 0, si tables de G).
+     */
+    stats: { maxVelocity: number; avgVelocity: number; segmentTime: number; lengthM: number; airTicks: number };
 }
 
 interface Sub {
@@ -432,6 +438,11 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
     let maxPosVert = 100;
     let maxNegVert = 100;
     const gOut = pieces.map(() => ({ lat: 0, vMax: -Infinity, vMin: Infinity }));
+    let maxVelocity = 0;
+    let avgSum = 0;
+    let segmentTime = 0;
+    let lengthUnits = 0;
+    let airTicks = 0;
 
     for (; ticks < maxTicks; ticks++) {
         if (withG) {
@@ -449,6 +460,16 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
                 r.vMax = Math.max(r.vMax, prevVert);
                 r.vMin = Math.min(r.vMin, prevVert);
             }
+            if (prevVert <= 0) airTicks++;
+        }
+        {
+            const absV = Math.abs(v);
+            maxVelocity = Math.max(maxVelocity, absV);
+            if ((ticks + 1) % 32 === 0 && absV > 0) {
+                avgSum += absV;
+                segmentTime++;
+            }
+            lengthUnits += Math.abs(((v + acc) >> 10) * 42);
         }
         if (departing && v <= DEPART_SPEED) acc = DEPART_ACCELERATION;
         // handleBlockBrake : pièce sous la tête, frein de bloc ouvert (un seul train).
@@ -572,5 +593,6 @@ export function simulateExact(pieces: (TrackPieceInfo & { chain?: boolean; brake
             r.gVertMin = g.vMin / 100;
         });
     }
-    return { pieces: out, stalledAt, ticks, seconds: ticks / 40, completed, gForces: withG ? { maxLat: maxLat, maxPosVert, maxNegVert } : undefined };
+    const stats = { maxVelocity, avgVelocity: Math.floor(avgSum / Math.max(segmentTime, 1)), segmentTime, lengthM: Math.floor(lengthUnits / 65536), airTicks };
+    return { pieces: out, stalledAt, ticks, seconds: ticks / 40, completed, gForces: withG ? { maxLat: maxLat, maxPosVert, maxNegVert } : undefined, stats };
 }

@@ -15,7 +15,7 @@ import { analyzeConnectivity } from "../planners/connectivity.js";
 import { expandPolyline, planPath } from "../planners/path.js";
 import { roleOf } from "../roles.js";
 import type { InverseOp } from "../state/journal.js";
-import { BUDGET, cap, defineTool, result, toolError, zDryRun, zRectShape, zTile, type ToolContext } from "./context.js";
+import { BUDGET, cap, defineTool, landscapeHint, requireLandscape, result, toolError, zDryRun, zRectShape, zTile, type ToolContext } from "./context.js";
 import { chunks, groupFailures, mergeBulk, placePathTiles } from "./helpers.js";
 
 const MAX_FLATTEN_TILES = 64 * 64;
@@ -36,12 +36,14 @@ export function registerBuildTools(server: McpServer, ctx: ToolContext): void {
         {
             title: "Aplanir un rectangle",
             description:
+                "Relief verrouillé par défaut : sans session_set_landscape (accord de l'utilisateur), seul dryRun est permis. " +
                 "Aplanit un rectangle de tuiles à un niveau donné (level) ou 'auto' (médiane des niveaux actuels). À faire AVANT de poser chemins " +
                 "et attractions. Renvoie les tuiles en échec (terrain non possédé, objets gênants) et le nombre de bords en falaise créés. " +
                 "Exemple : { x1: 60, y1: 60, x2: 70, y2: 66, level: 'auto' }.",
             input: { ...zRectShape, level: z.union([z.number().int().min(MIN_LEVEL).max(MAX_LEVEL), z.literal("auto")]).default("auto"), dryRun: zDryRun },
         },
         async ({ x1, y1, x2, y2, level, dryRun }) => {
+            requireLandscape(ctx, "terrain_flatten", dryRun);
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             if (rectArea(rect) > MAX_FLATTEN_TILES) toolError("INVALID_PARAMS", `Zone trop grande (${rectArea(rect)} tuiles, max ${MAX_FLATTEN_TILES}).`);
             const reg = await ctx.cache.region(rect);
@@ -110,12 +112,14 @@ export function registerBuildTools(server: McpServer, ctx: ToolContext): void {
         {
             title: "Style de surface",
             description:
+                "Relief verrouillé par défaut : sans session_set_landscape (accord de l'utilisateur), seul dryRun est permis. " +
                 "Change le style de surface (herbe, sable, terre…) et/ou de bordure sur un rectangle. surface/edge : identifiants d'objets " +
                 "terrain_surface / terrain_edge chargés (list_objects type terrain_surface loadedOnly).",
             input: { ...zRectShape, surface: z.string().optional(), edge: z.string().optional(), dryRun: zDryRun },
         },
         async ({ x1, y1, x2, y2, surface, edge, dryRun }) => {
             if (!surface && !edge) toolError("INVALID_PARAMS", "Indique surface et/ou edge.");
+            requireLandscape(ctx, "terrain_set_surface", dryRun);
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             const reg = await ctx.cache.region(rect);
             const r = await ctx.bridge.call("terrain.set_surface", { ...rect, surfaceObject: surface ?? null, edgeObject: edge ?? null, dryRun });
@@ -215,7 +219,7 @@ export function registerBuildTools(server: McpServer, ctx: ToolContext): void {
                 const ysBad = blocking.map((p) => p.y);
                 toolError(first.code === "WATER" ? "OBSTRUCTED" : "BAD_SLOPE", `${blocking.length} tuile(s) impossibles : ${first.message}`, {
                     details: { problems: blocking.slice(0, 10) },
-                    hint: `Utilise terrain_flatten sur (x ${Math.min(...xsBad)}–${Math.max(...xsBad)}, y ${Math.min(...ysBad)}–${Math.max(...ysBad)}) ou passe level pour une passerelle.`,
+                    hint: `Passe level pour une passerelle, ou change de tracé.${landscapeHint(ctx, `terrain_flatten sur (x ${Math.min(...xsBad)}–${Math.max(...xsBad)}, y ${Math.min(...ysBad)}–${Math.max(...ysBad)})`)}`,
                 });
             }
             // Simulation d'abord : on ne pose rien si un placement échoue (sauf allowPartial).

@@ -31,6 +31,7 @@ describe("session et observation", () => {
             "get_ride",
             "terrain_flatten",
             "terrain_set_surface",
+            "session_set_landscape",
             "land_set_ownership",
             "path_build",
             "path_remove",
@@ -89,8 +90,40 @@ describe("erreurs actionnables", () => {
         const r = await h.call("path_build", { points: [{ x: 10, y: 10 }, { x: 14, y: 10 }] });
         expect(r.isError).toBe(true);
         expect(r.json.error.code).toBe("BAD_SLOPE");
-        expect(r.json.error.hint).toContain("terrain_flatten");
+        // Relief verrouillé par défaut (SPEC 9.2) : le hint ne propose de terrasser qu'avec l'accord de l'utilisateur.
+        expect(r.json.error.hint).not.toContain("terrain_flatten");
         expect(h.plugin.world.tile(10, 10).paths).toHaveLength(0);
+        await h.call("session_set_landscape", { allowed: true, userRequest: "tu peux aplanir" });
+        const again = await h.call("path_build", { points: [{ x: 10, y: 10 }, { x: 14, y: 10 }] });
+        expect(again.json.error.hint).toContain("terrain_flatten");
+    });
+
+    it("le relief reste intact sans l'accord de l'utilisateur", async () => {
+        const w = h.plugin.world;
+        await h.call("session_set_mode", { mode: "sandbox" });
+        const before = w.tile(20, 20).h;
+        const r = await h.call("terrain_flatten", { x1: 18, y1: 18, x2: 22, y2: 22, level: before + 3 });
+        expect(r.isError).toBe(true);
+        expect(r.json.error.code).toBe("NOT_SUPPORTED_IN_MODE");
+        expect(r.json.error.hint).toContain("session_set_landscape");
+        expect(w.tile(20, 20).h).toBe(before);
+        expect((await h.call("terrain_flatten", { x1: 18, y1: 18, x2: 22, y2: 22, level: before + 3, dryRun: true })).isError).toBe(false);
+        expect(w.tile(20, 20).h).toBe(before);
+        for (const [tool, args] of [
+            ["terrain_set_surface", { x1: 18, y1: 18, x2: 22, y2: 22, surface: "rct2.terrain_surface.sand" }],
+            ["terrain_shape", { op: "hill", center: { x: 20, y: 20 }, radius: 4, height: 3 }],
+            ["water_create_lake", { x1: 18, y1: 18, x2: 26, y2: 24, depth: 2 }],
+        ] as const) {
+            const res = await h.call(tool, args);
+            expect(res.json.error?.code, tool).toBe("NOT_SUPPORTED_IN_MODE");
+        }
+        expect((await h.call("session_set_landscape", { allowed: true })).isError).toBe(true);
+        expect((await h.call("session_info")).json.landscapeAllowed).toBe(false);
+        expect((await h.call("session_set_landscape", { allowed: true, userRequest: "aplanis la zone" })).isError).toBe(false);
+        expect((await h.call("terrain_flatten", { x1: 18, y1: 18, x2: 22, y2: 22, level: before + 3 })).isError).toBe(false);
+        expect(w.tile(20, 20).h).toBe(before + 3);
+        await h.call("session_set_landscape", { allowed: false });
+        expect((await h.call("terrain_flatten", { x1: 18, y1: 18, x2: 22, y2: 22, level: before })).isError).toBe(true);
     });
 
     it("en mode strict, le terrain non possédé bloque la construction", async () => {
@@ -130,6 +163,7 @@ describe("scénario MVP (SPEC 1.3)", () => {
         const w = h.plugin.world;
         expect((await h.call("session_info")).json.connected).toBe(true);
         expect((await h.call("session_set_mode", { mode: "sandbox" })).isError).toBe(false);
+        expect((await h.call("session_set_landscape", { allowed: true, userRequest: "aplanis le terrain du parc" })).isError).toBe(false);
         expect((await h.call("terrain_flatten", { x1: 10, y1: 20, x2: 50, y2: 62, level: "auto" })).isError).toBe(false);
 
         const ent = await h.call("park_set_entrance", { x: 32, y: 60, direction: 3, spawnDistance: 2 });

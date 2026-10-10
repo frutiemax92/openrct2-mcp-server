@@ -14,7 +14,13 @@ export interface SiteOptions {
     /** Zone de recherche (défaut : toute la carte). */
     area?: TileRect;
     results?: number;
+    /** Rempli par findSites : rectangles sans obstacle, et parmi eux ceux où la station ne tient pas. */
+    diag?: { free: number; noStation: number };
 }
+
+/** Tuiles libres voulues devant la station (lift) : 15 si le site le permet, 6 au moins (lift qui tourne). */
+const AHEAD_WANTED = 15;
+const AHEAD_MIN = 6;
 
 export interface SiteStation {
     x: number;
@@ -103,8 +109,12 @@ function placeStation(get: TileGetter, b: TileRect, len: number, dist: (x: numbe
     const H = b.y2 - b.y1 + 1;
     const alongX = W >= H;
     const L = alongX ? W : H;
-    const off = Math.max(4, Math.round(L * 0.25));
-    if (off + len + 15 > L) return null;
+    // Place devant la station adaptée au site : l'exigence fixe de 15 tuiles refusait tout site de moins de ~25 tuiles de
+    // long, et l'erreur accusait les obstacles (Black Widow Diagonal de Haiku, 9 octobre 2026 : 24×18, 22×16, 16×12
+    // libres et plats, tous OBSTRUCTED). Un site compact garde 6 tuiles devant : le lift tourne ou part en travers.
+    const ahead = Math.min(AHEAD_WANTED, Math.max(AHEAD_MIN, L - len - 4));
+    const off = Math.max(4, Math.min(Math.round(L * 0.25), L - len - ahead));
+    if (off + len + ahead > L) return null;
     let best: { station: SiteStation; access: number | null; cost: number } | null = null;
     // edge : 0 = bord bas (x1 ou y1), 1 = bord haut ; forward : sens de marche vers les x/y croissants ou décroissants.
     for (const edge of [0, 1])
@@ -168,8 +178,12 @@ export function findSites(get: TileGetter, opts: SiteOptions): Site[] {
                         if (g > gMax) gMax = g;
                     }
                 const bounds = { x1, y1, x2, y2 };
+                if (opts.diag) opts.diag.free++;
                 const st = placeStation(get, bounds, opts.stationLength, dist);
-                if (!st) continue;
+                if (!st) {
+                    if (opts.diag) opts.diag.noStation++;
+                    continue;
+                }
                 const water = wet(x1, y1, x2, y2) / (w * h);
                 const relief = gMax - gMin;
                 // Relief : la piste basse bute sur le terrain haut ; l'eau est plate et donne la proximité.

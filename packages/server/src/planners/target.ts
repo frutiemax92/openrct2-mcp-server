@@ -1,6 +1,8 @@
-// Cibles tirées d'un circuit de référence (COASTER_SPACE.md, section 9) : longueur de piste, densité, empilement,
-// dessous du lift et trains. coaster_build_plan les suit à chaque appel et refuse de fermer un circuit trop court
-// ou qui fait tourner moins de trains que la référence. Fonctions pures.
+// Cibles tirées d'un circuit de référence (COASTER_SPACE.md, sections 9 et 7 tervicies) : longueur de piste, contour
+// (emprise vue de dessus, trous compris), trains, forme de la première chute. coaster_build_plan les suit à chaque appel
+// et refuse de fermer un circuit trop court, trop étalé (contour) ou qui fait tourner moins de trains que la référence.
+// L'empilement et le dessous du lift sont mesurés mais n'imposent rien : un circuit peut être compact côte à côte.
+// Fonctions pures.
 
 import type { TrackPieceInfo } from "@openrct2-claude/protocol";
 import { spaceProfile, type SpaceProfile } from "./space.js";
@@ -12,14 +14,11 @@ type Piece = TrackPieceInfo & { chain?: boolean };
 export const LENGTH_MIN = 0.9;
 /** Au-delà, simple avertissement : le circuit déborde de la référence. */
 export const LENGTH_MAX = 1.2;
-/** Densité minimale d'un circuit fermé, en part de la référence (refus de fermeture en dessous). */
-export const DENSITY_MIN = 0.75;
-/** Emprise maximale d'un circuit fermé, en part de la référence (refus de fermeture au-dessus). */
+/**
+ * Contour maximal d'un circuit fermé (tuiles de piste + trous enfermés, vu de dessus), en part de la référence (refus
+ * de fermeture au-dessus). Seul critère de compacité bloquant : avec la longueur minimale, il fixe aussi la densité.
+ */
 export const FOOTPRINT_MAX = 1.3;
-/** Tuiles empilées minimales, en part de la référence (refus de fermeture en dessous). */
-export const STACKED_MIN = 0.4;
-/** Dessous du lift minimal, en part de la référence, quand elle en a un (refus de fermeture en dessous). */
-export const LIFT_SHARED_MIN = 0.25;
 /** Pièces raides (60° et 90°) minimales, en part de la référence (refus de fermeture en dessous). */
 export const STEEP_MIN = 0.5;
 /** Hauteur minimale de la première chute, en part de celle de la référence (refus de pose en dessous). */
@@ -89,8 +88,11 @@ export interface ReferenceTarget {
     pieces: number;
     /** Longueur de piste en tuiles (somme des longueurs de segments). */
     lengthTiles: number;
+    /** Emprise : tuiles du contour vu de dessus (piste + trous enfermés), pas le rectangle englobant. */
     footprintArea: number;
-    /** Tuiles de piste par tuile d'emprise. */
+    /** Trous enfermés par la piste (tuiles), compris dans footprintArea. */
+    holes?: number;
+    /** Tuiles de piste par tuile du contour. */
     density: number;
     coverage: number;
     stackedTiles: number;
@@ -127,8 +129,9 @@ export function targetFrom(name: string, layout: LayoutStats, space: SpaceProfil
         name,
         pieces: layout.pieces,
         lengthTiles: layout.lengthTiles,
-        footprintArea: space.footprint.area,
-        density: layout.density,
+        footprintArea: space.outline.area,
+        holes: space.outline.holes,
+        density: outlineDensity(layout, space),
         coverage: space.coverage,
         stackedTiles: space.stackedTiles,
         liftShared: space.elements.find((e) => e.kind === "lift")?.shared ?? 0,
@@ -137,6 +140,11 @@ export function targetFrom(name: string, layout: LayoutStats, space: SpaceProfil
         heightLevels: layout.maxLevel - layout.minLevel,
         footprintSides: sides(space.footprint.w, space.footprint.h),
     };
+}
+
+/** Tuiles de piste par tuile du contour. */
+export function outlineDensity(layout: LayoutStats, space: SpaceProfile): number {
+    return space.outline.area > 0 ? Math.round((layout.lengthTiles / space.outline.area) * 100) / 100 : 0;
 }
 
 const sides = (w: number, h: number): [number, number] => [Math.max(w, h), Math.min(w, h)];
@@ -180,7 +188,7 @@ export function grownFootprint(
 /**
  * Applique les modifications à une cible : longueur × k, hauteur, vitesse et trains visés, et l'emprise permise
  * agrandie par grownFootprint (la densité visée baisse d'autant : une chute plus longue est de la piste droite).
- * L'empilement et le dessous du lift restent ceux de la référence.
+ * L'empilement et le dessous du lift (indicatifs) restent ceux de la référence.
  */
 export function applyMods(t: ReferenceTarget, mods: ReferenceMods | undefined): ReferenceTarget {
     if (!mods || !Object.values(mods).some((v) => v !== undefined)) return t;
@@ -274,13 +282,13 @@ export interface TargetCheck {
     view: Record<string, unknown>;
     /** Écarts à corriger (avertissements). */
     warnings: string[];
-    /** Écarts qui interdisent de fermer le circuit : longueur, trains, emprise, densité, empilement, dessous du lift. */
+    /** Écarts qui interdisent de fermer le circuit : longueur, trains, contour, pièces raides, hauteur, vitesse. */
     blocking: string[];
 }
 
 /**
  * Compare le circuit (ouvert ou fermé) à la référence. Sur un circuit ouvert, seule la longueur restante est donnée :
- * densité et empilement ne se jugent qu'à la fermeture.
+ * contour et densité ne se jugent qu'à la fermeture.
  */
 export function checkTarget(
     t: ReferenceTarget,
@@ -296,12 +304,12 @@ export function checkTarget(
         reference: t.name,
         lengthTiles: `${layout.lengthTiles} / ${t.lengthTiles} (${pct(layout.lengthTiles / t.lengthTiles)} %, minimum ${minLength} pour fermer)`,
         remainingTiles: Math.max(0, minLength - layout.lengthTiles),
-        density: `${layout.density} / ${t.density}`,
-        stackedTiles: `${space.stackedTiles} / ${t.stackedTiles}`,
-        liftShared: `${lift} / ${t.liftShared}`,
+        density: `${outlineDensity(layout, space)} / ${t.density}`,
+        stackedTiles: `${space.stackedTiles} / ${t.stackedTiles} (indicatif)`,
+        liftShared: `${lift} / ${t.liftShared} (indicatif)`,
         maxTrains: `${layout.blocks.maxTrains} / ${t.maxTrains}`,
         heightLevels: `${layout.maxLevel - layout.minLevel} / ${t.heightLevels}`,
-        footprint: `${space.footprint.w}×${space.footprint.h} = ${space.footprint.area} / ${Math.floor(allowed.area * FOOTPRINT_MAX)} tuiles permises${t.mods ? ` (agrandie par les modifications${allowed.extraLevels ? `, chute +${allowed.extraLevels} niveaux` : ""})` : ""}`,
+        footprint: `contour ${space.outline.area} tuiles (${space.outline.holes} de trous) / ${Math.floor(allowed.area * FOOTPRINT_MAX)} permises${t.mods ? ` (agrandie par les modifications${allowed.extraLevels ? `, chute +${allowed.extraLevels} niveaux` : ""})` : ""}`,
         ...(t.topSpeedKmh !== undefined && ride.topSpeedKmh !== undefined ? { topSpeedKmh: `${Math.round(ride.topSpeedKmh)} / ${Math.round(t.topSpeedKmh)}` } : {}),
         ...(t.firstDrop ? { firstDrop: `${dropLabel(ride.firstDrop)} / ${dropLabel(t.firstDrop)}` } : {}),
         ...(t.steepPieces !== undefined && ride.steepPieces !== undefined ? { steepPieces: `${ride.steepPieces} / ${t.steepPieces}` } : {}),
@@ -324,7 +332,7 @@ export function checkTarget(
         if (layout.lengthTiles < minLength)
             warnings.push(
                 `LONGUEUR : ${layout.lengthTiles} tuiles de piste sur ${t.lengthTiles} dans ${t.name} ; il en reste au moins ${minLength - layout.lengthTiles} à poser avant de fermer ` +
-                    "(la fermeture sera refusée en dessous). Ajoute des éléments qui s'enroulent dans l'emprise (hélices, virages en pente, passages sous le lift), pas des droites. Pour la fin du circuit, coaster_search_section cherche une seconde moitié compacte dans bounds ; la poser à la main donne des circuits étalés.",
+                    "(la fermeture sera refusée en dessous). Ajoute des éléments qui s'enroulent près de la piste déjà posée (hélices, virages en pente), sans laisser de trous, pas des droites. Pour la fin du circuit, coaster_search_section cherche une seconde moitié compacte dans bounds ; la poser à la main donne des circuits étalés.",
             );
         return { view, warnings, blocking };
     }
@@ -337,16 +345,14 @@ export function checkTarget(
             `${ride.steepPieces} pièces raides (60°) contre ${t.steepPieces} dans ${t.name} (minimum ${Math.ceil(t.steepPieces * STEEP_MIN)}) : collines et chutes steep: true, virages turn { slope: 'steep_down' }`,
         );
     if (layout.blocks.maxTrains < t.maxTrains) blocking.push(`${layout.blocks.maxTrains} train(s) permis contre ${t.maxTrains} dans ${t.name} : ajoute des block_brakes`);
-    // Compacité : sans ces seuils, un circuit long mais étalé (densité 0,15 contre 0,52, 2 tuiles empilées contre 52) fermait.
-    // Emprise et densité : celles de la cible, agrandies si la chute posée a dû monter plus haut (allowedSpace).
-    if (space.footprint.area > allowed.area * FOOTPRINT_MAX)
-        blocking.push(`emprise ${space.footprint.area} tuiles contre ${allowed.area} dans ${t.name} (${(space.footprint.area / allowed.area).toFixed(2)} ×, maximum ${FOOTPRINT_MAX} ×) : refais le circuit dans suggestedBounds`);
-    if (layout.density < allowed.density * DENSITY_MIN)
-        blocking.push(`densité ${layout.density} contre ${allowed.density} dans ${t.name} (minimum ${(allowed.density * DENSITY_MIN).toFixed(2)})`);
-    if (space.stackedTiles < t.stackedTiles * STACKED_MIN)
-        blocking.push(`${space.stackedTiles} tuiles empilées contre ${t.stackedTiles} dans ${t.name} (minimum ${Math.ceil(t.stackedTiles * STACKED_MIN)}) : la piste doit passer au-dessus et au-dessous d'elle-même`);
-    if (t.liftShared > 0 && lift < t.liftShared * LIFT_SHARED_MIN)
-        blocking.push(`dessous du lift : ${lift} tuile(s) contre ${t.liftShared} dans ${t.name} (minimum ${Math.ceil(t.liftShared * LIFT_SHARED_MIN)}) : la seconde moitié doit passer sous le lift (coaster_search_section)`);
+    // Compacité : le contour vu de dessus (piste + trous enfermés), agrandi si la chute posée a dû monter plus haut
+    // (allowedSpace). Avec la longueur minimale, il borne aussi la densité. L'empilement et le dessous du lift n'étaient
+    // qu'un moyen d'être compact, et les exiger écartait les tracés serrés côte à côte (COASTER_SPACE 7 tervicies).
+    if (space.outline.area > allowed.area * FOOTPRINT_MAX)
+        blocking.push(
+            `contour ${space.outline.area} tuiles (${space.outline.holes} de trous) contre ${allowed.area} dans ${t.name} (${(space.outline.area / allowed.area).toFixed(2)} ×, maximum ${FOOTPRINT_MAX} ×) : ` +
+                "le tracé laisse trop de trous vu de dessus ; resserre-le (hélices, virages en pente, passages à côté ou au-dessus de la piste déjà posée)",
+        );
     if (layout.lengthTiles > t.lengthTiles * LENGTH_MAX) warnings.push(`circuit long : ${layout.lengthTiles} tuiles de piste contre ${t.lengthTiles} dans ${t.name}`);
     warnings.push(...targetLevers(targetFrom("circuit", layout, space), t));
     return { view, warnings, blocking };
@@ -358,8 +364,6 @@ export function targetLevers(ride: ReferenceTarget, ref: ReferenceTarget): strin
     if (ride.lengthTiles < ref.lengthTiles * LENGTH_MIN)
         out.push(`longueur ${ride.lengthTiles} tuiles de piste contre ${ref.lengthTiles} (${pct(ride.lengthTiles / ref.lengthTiles)} %) : ajoute ${ref.lengthTiles - ride.lengthTiles} tuiles dans la même emprise`);
     if (ride.density < ref.density * 0.85)
-        out.push(`densité ${ride.density} tuile de piste par tuile d'emprise contre ${ref.density} : à emprise égale, la référence pose ${Math.round((ref.density / Math.max(ride.density, 0.01) - 1) * 100)} % de piste en plus`);
-    if (ride.stackedTiles < ref.stackedTiles * 0.6) out.push(`tuiles empilées ${ride.stackedTiles} contre ${ref.stackedTiles} : la piste doit passer au-dessus et au-dessous d'elle-même`);
-    if (ref.liftShared > 0 && ride.liftShared < ref.liftShared / 2) out.push(`dessous du lift : ${ride.liftShared} tuile(s) contre ${ref.liftShared} : fais passer la seconde moitié sous le lift`);
+        out.push(`densité ${ride.density} tuile de piste par tuile du contour contre ${ref.density} : à contour égal, la référence pose ${Math.round((ref.density / Math.max(ride.density, 0.01) - 1) * 100)} % de piste en plus`);
     return out;
 }

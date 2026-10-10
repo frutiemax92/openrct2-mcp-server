@@ -5,6 +5,8 @@ export interface RideTypeInfo {
     category: string | null;
     startTrackPiece: number | null;
     startTrackPieceName: string | null;
+    /** Style de dessin (TrackStyle) : clé de TRACK_STYLE_PIECES. */
+    trackStyle: string | null;
     /** Groupes de pièces constructibles (TrackGroup). */
     trackGroups: number[];
     /** Groupes dessinables seulement avec le cheat enableAllDrawableTrackPieces. */
@@ -33,6 +35,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -80,6 +83,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "standUpRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -143,6 +147,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "suspendedSwingingCoaster",
         "trackGroups": [
             1,
             2,
@@ -179,6 +184,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "invertedRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -246,6 +252,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "juniorRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -290,6 +297,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "transport",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniatureRailway",
         "trackGroups": [
             1,
             2,
@@ -316,6 +324,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "transport",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "monorail",
         "trackGroups": [
             1,
             2,
@@ -342,6 +351,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniSuspendedCoaster",
         "trackGroups": [
             1,
             2,
@@ -369,6 +379,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "boatHire",
         "trackGroups": [
             1,
             2,
@@ -394,6 +405,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "woodenWildMouse",
         "trackGroups": [
             1,
             2,
@@ -422,6 +434,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "steeplechase",
         "trackGroups": [
             1,
             2,
@@ -455,6 +468,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "carRide",
         "trackGroups": [
             1,
             2,
@@ -483,6 +497,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 66,
         "startTrackPieceName": "towerBase",
+        "trackStyle": "launchedFreefall",
         "trackGroups": [
             21
         ],
@@ -502,6 +517,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "bobsleighCoaster",
         "trackGroups": [
             1,
             2,
@@ -533,6 +549,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 66,
         "startTrackPieceName": "towerBase",
+        "trackStyle": "observationTower",
         "trackGroups": [
             21
         ],
@@ -552,6 +569,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "loopingRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -616,6 +634,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "dinghySlide",
         "trackGroups": [
             1,
             2,
@@ -643,6 +662,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "mineTrainCoaster",
         "trackGroups": [
             1,
             2,
@@ -684,6 +704,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "transport",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "chairlift",
         "trackGroups": [
             1,
             2,
@@ -706,6 +727,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "corkscrewRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -773,6 +795,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 101,
         "startTrackPieceName": "maze",
+        "trackStyle": "maze",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -790,6 +813,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 258,
         "startTrackPieceName": "flatTrack2x2",
+        "trackStyle": "spiralSlide",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -807,6 +831,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "goKarts",
         "trackGroups": [
             1,
             2,
@@ -842,6 +867,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "logFlume",
         "trackGroups": [
             1,
             2,
@@ -868,6 +894,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "riverRapids",
         "trackGroups": [
             1,
             2,
@@ -894,6 +921,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
+        "trackStyle": "dodgems",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -911,6 +939,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 261,
         "startTrackPieceName": "flatTrack1x5",
+        "trackStyle": "swingingShip",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -928,6 +957,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 263,
         "startTrackPieceName": "flatTrack1x4B",
+        "trackStyle": "swingingInverterShip",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -945,6 +975,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "shop",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -962,6 +993,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "shop",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -979,6 +1011,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "shop",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -996,6 +1029,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "merryGoRound",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1013,6 +1047,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 264,
         "startTrackPieceName": "flatTrack1x1B",
+        "trackStyle": "shop",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1030,6 +1065,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "facility",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1047,6 +1083,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 265,
         "startTrackPieceName": "flatTrack1x4C",
+        "trackStyle": "ferrisWheel",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1064,6 +1101,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 258,
         "startTrackPieceName": "flatTrack2x2",
+        "trackStyle": "motionSimulator",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1081,6 +1119,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "_3DCinema",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1098,6 +1137,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "topSpin",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1115,6 +1155,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "spaceRings",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1132,6 +1173,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "reverseFreefallCoaster",
         "trackGroups": [
             1,
             2,
@@ -1155,6 +1197,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "transport",
         "startTrackPiece": 66,
         "startTrackPieceName": "towerBase",
+        "trackStyle": "lift",
         "trackGroups": [
             21
         ],
@@ -1174,6 +1217,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "twisterRollerCoaster",
         "trackGroups": [
             0,
             1,
@@ -1246,6 +1290,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "shop",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1263,6 +1308,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "twist",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1280,6 +1326,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "hauntedHouse",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1297,6 +1344,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "shop",
         "startTrackPiece": 262,
         "startTrackPieceName": "flatTrack1x1A",
+        "trackStyle": "facility",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1314,6 +1362,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "circus",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -1331,6 +1380,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "ghostTrain",
         "trackGroups": [
             1,
             2,
@@ -1356,6 +1406,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "twisterRollerCoaster",
         "trackGroups": [
             0,
             1,
@@ -1427,6 +1478,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "woodenRollerCoaster",
         "trackGroups": [
             0,
             1,
@@ -1478,6 +1530,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "sideFrictionRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -1510,6 +1563,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "steelWildMouse",
         "trackGroups": [
             1,
             2,
@@ -1543,6 +1597,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "multiDimensionRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -1590,6 +1645,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "none",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "null",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 4,
@@ -1607,6 +1663,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "flyingRollerCoaster",
         "trackGroups": [
             1,
             6,
@@ -1668,6 +1725,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "none",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "null",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 4,
@@ -1685,6 +1743,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "virginiaReel",
         "trackGroups": [
             1,
             2,
@@ -1709,6 +1768,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "splashBoats",
         "trackGroups": [
             1,
             2,
@@ -1734,6 +1794,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniHelicopters",
         "trackGroups": [
             1,
             2,
@@ -1759,6 +1820,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "corkscrewRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -1817,6 +1879,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "transport",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "suspendedMonorail",
         "trackGroups": [
             1,
             2,
@@ -1843,6 +1906,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "none",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "null",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 4,
@@ -1860,6 +1924,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "reverserRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -1887,6 +1952,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "heartlineTwisterCoaster",
         "trackGroups": [
             1,
             2,
@@ -1914,6 +1980,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniGolf",
         "trackGroups": [
             1,
             2,
@@ -1937,6 +2004,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "latticeTriangle",
         "trackGroups": [
             1,
             2,
@@ -2006,6 +2074,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 66,
         "startTrackPieceName": "towerBase",
+        "trackStyle": "rotoDrop",
         "trackGroups": [
             21
         ],
@@ -2025,6 +2094,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
+        "trackStyle": "flyingSaucers",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -2042,6 +2112,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 266,
         "startTrackPieceName": "flatTrack3x3",
+        "trackStyle": "crookedHouse",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -2059,6 +2130,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "gentle",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "monorailCycles",
         "trackGroups": [
             1,
             2,
@@ -2082,6 +2154,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "compactInvertedCoaster",
         "trackGroups": [
             1,
             2,
@@ -2128,6 +2201,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "waterCoaster",
         "trackGroups": [
             1,
             2,
@@ -2171,6 +2245,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "airPoweredVerticalCoaster",
         "trackGroups": [
             1,
             2,
@@ -2201,6 +2276,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "invertedHairpinCoaster",
         "trackGroups": [
             1,
             2,
@@ -2232,6 +2308,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 257,
         "startTrackPieceName": "flatTrack1x4A",
+        "trackStyle": "magicCarpet",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -2249,6 +2326,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "submarineRide",
         "trackGroups": [
             1,
             2,
@@ -2271,6 +2349,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "water",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "splashBoats",
         "trackGroups": [
             1,
             2,
@@ -2297,6 +2376,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "thrill",
         "startTrackPiece": 259,
         "startTrackPieceName": "flatTrack4x4",
+        "trackStyle": "enterprise",
         "trackGroups": [],
         "extraTrackGroups": [],
         "liftMinSpeed": 5,
@@ -2314,6 +2394,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "invertedImpulseCoaster",
         "trackGroups": [
             1,
             2,
@@ -2339,6 +2420,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "miniRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -2386,6 +2468,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "mineRide",
         "trackGroups": [
             1,
             2,
@@ -2420,6 +2503,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "limLaunchedRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -2480,6 +2564,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "hybridCoaster",
         "trackGroups": [
             0,
             1,
@@ -2541,6 +2626,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "singleRailRollerCoaster",
         "trackGroups": [
             0,
             1,
@@ -2608,6 +2694,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "alpineCoaster",
         "trackGroups": [
             0,
             1,
@@ -2646,6 +2733,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "classicWoodenRollerCoaster",
         "trackGroups": [
             0,
             1,
@@ -2693,6 +2781,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "classicStandUpRollerCoaster",
         "trackGroups": [
             1,
             2,
@@ -2750,6 +2839,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "latticeTriangleAlt",
         "trackGroups": [
             1,
             2,
@@ -2820,6 +2910,7 @@ export const RIDE_TYPES: readonly RideTypeInfo[] = [
         "category": "rollerCoaster",
         "startTrackPiece": 1,
         "startTrackPieceName": "endStation",
+        "trackStyle": "classicWoodenTwisterRollerCoaster",
         "trackGroups": [
             0,
             1,

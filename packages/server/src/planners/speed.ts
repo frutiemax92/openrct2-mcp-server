@@ -165,6 +165,10 @@ export interface TrainObject {
     third: number;
     rear: number;
     defaultCar: number;
+    /** Multiplicateurs de note de l'objet (ratingMultiplier) et drapeaux qui touchent la note. */
+    ratings?: { excitement: number; intensity: number; nausea: number };
+    limitAirTimeBonus?: boolean;
+    covered?: boolean;
 }
 
 /** RideEntryGetVehicleAtPosition (Ride.cpp). */

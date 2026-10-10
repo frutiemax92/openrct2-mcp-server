@@ -79,7 +79,7 @@ describe("searchSection", () => {
             timeMs: 20_000,
             results: 3,
         });
-        if (process.env.SEARCH_DEBUG) console.log(JSON.stringify(res.candidates.map((c) => ({ score: c.score, len: c.layout.lengthTiles, fp: c.layout.footprint.size, stacked: c.space.stackedTiles, lift: c.liftShared, macros: c.macros, closure: c.closure.map((p) => p.name) })), null, 1), res.elapsedMs, res.approachBlocked);
+        if (process.env.SEARCH_DEBUG) console.log(JSON.stringify(res.candidates.map((c) => ({ score: c.score, len: c.layout.lengthTiles, fp: c.layout.footprint.size, outline: c.space.outline.area, holes: c.space.outline.holes, sb: c.sBends, stacked: c.space.stackedTiles, lift: c.liftShared, macros: c.macros, closure: c.closure.map((p) => p.name) })), null, 1), res.elapsedMs, res.approachBlocked);
         expect(res.candidates.length).toBeGreaterThan(0);
         const best = res.candidates[0];
         const added = [...best.pieces, ...best.closure];

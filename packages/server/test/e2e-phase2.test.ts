@@ -51,6 +51,10 @@ describe("outils de la Phase 2", () => {
 });
 
 describe("terrain_shape et water_create_lake", () => {
+    beforeEach(async () => {
+        await h.call("session_set_landscape", { allowed: true, userRequest: "modèle le terrain" });
+    });
+
     it("une colline donne des pentes valides, s'annule avec undo_last", async () => {
         await h.call("session_set_mode", { mode: "sandbox" });
         const r = await h.call("terrain_shape", { op: "hill", center: { x: 30, y: 30 }, radius: 6, height: 4 });

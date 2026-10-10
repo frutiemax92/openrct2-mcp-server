@@ -54,6 +54,7 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
                     gameMode: info.gameMode,
                     mode: ctx.state.mode,
                     validated: ctx.state.validated,
+                    landscapeAllowed: ctx.state.landscapeAllowed,
                     paused: info.paused,
                     gameSpeed: info.gameSpeed,
                     mapSize: info.mapSize,
@@ -115,6 +116,35 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
                     applied: items.length - failed.length,
                     warnings: failed.map((f) => `${f.item.cheat} : ${f.r.error?.message}`),
                     next_hints: mode === "sandbox" ? ["Pense à re-tester en strict avant de déclarer le parc validé."] : [],
+                },
+            });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
+        "session_set_landscape",
+        {
+            title: "Autoriser la modification du relief",
+            description:
+                "Le relief (hauteurs, pentes, eau, style de surface) est verrouillé par défaut : terrain_flatten, terrain_set_surface, " +
+                "terrain_shape et water_create_lake n'écrivent qu'après allowed: true. Ne l'active que si l'utilisateur demande ou accepte de " +
+                "modifier le terrain, et cite sa demande dans userRequest. Sinon adapte-toi au terrain : autre site, level, passerelle ; les " +
+                "montagnes russes passent au-dessus ou en tunnel dessous. Exemple : { allowed: true, userRequest: 'tu peux aplanir la zone du lac' }.",
+            input: {
+                allowed: z.boolean(),
+                userRequest: z.string().min(3).optional().describe("Demande ou accord de l'utilisateur, cité (exigé avec allowed: true)."),
+            },
+        },
+        async ({ allowed, userRequest }) => {
+            if (allowed && !userRequest) toolError("INVALID_PARAMS", "allowed: true exige userRequest : la demande ou l'accord de l'utilisateur, cité.");
+            ctx.state.landscapeAllowed = allowed;
+            return result({
+                budget: BUDGET.write,
+                response: {
+                    summary: allowed ? `Relief modifiable (demande : « ${userRequest} »).` : "Relief verrouillé : les outils de terrain ne font plus que simuler.",
+                    landscapeAllowed: allowed,
                 },
             });
         },

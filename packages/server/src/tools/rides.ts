@@ -18,7 +18,7 @@ import { analyzeConnectivity } from "../planners/connectivity.js";
 import type { PlannedPathTile } from "../planners/path.js";
 import type { InverseOp } from "../state/journal.js";
 import { rememberCarsPerTrain } from "./coasters.js";
-import { BUDGET, defineTool, result, toolError, zDirection, zDryRun, type ToolContext } from "./context.js";
+import { BUDGET, defineTool, landscapeHint, result, toolError, zDirection, zDryRun, type ToolContext } from "./context.js";
 import { placePathTiles, routeToNetwork } from "./helpers.js";
 
 interface EntranceCandidate {
@@ -83,7 +83,7 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
                 "une file d'attente côté entrée, puis ouvre (open). Si level surélève l'attraction, le raccord pose une passerelle sur supports " +
                 "jusqu'au réseau existant. x/y = tuile d'origine (centre pour une 3×3, coin pour 2×2/4×4), direction 0-3 " +
                 "(pour une boutique : côté du comptoir, 0 = −x, 1 = +y, 2 = +x, 3 = −y). L'empreinte doit être plate, possédée et libre " +
-                "(terrain_flatten avant si besoin). object = identifiant d'un objet 'ride' chargé (list_objects type ride loadedOnly ; placeable: true). " +
+                "(sinon choisis un autre emplacement, ou level pour la surélever ; terrain_flatten seulement si l'utilisateur a permis de modifier le relief). object = identifiant d'un objet 'ride' chargé (list_objects type ride loadedOnly ; placeable: true). " +
                 "Renvoie rideId, empreinte, entrée/sortie, tuiles de raccord et l'état de connexion. " +
                 "Exemple : { object: 'rct2.ride.mgr1', x: 66, y: 70, direction: 0, connectToPath: true }.",
             input: {
@@ -137,7 +137,7 @@ export function registerRideTools(server: McpServer, ctx: ToolContext): void {
             if (bad.length && args.level === undefined) {
                 toolError("BAD_SLOPE", `Empreinte non constructible : ${bad.slice(0, 4).join(", ")}${bad.length > 4 ? "…" : ""}.`, {
                     details: { footprint: box, level },
-                    hint: `terrain_flatten { x1: ${box.x1}, y1: ${box.y1}, x2: ${box.x2}, y2: ${box.y2}, level: ${level} }, ou déplace l'attraction.`,
+                    hint: `Déplace l'attraction ou passe level pour la surélever.${landscapeHint(ctx, `terrain_flatten { x1: ${box.x1}, y1: ${box.y1}, x2: ${box.x2}, y2: ${box.y2}, level: ${level} }`)}`,
                 });
             }
             if (args.dryRun) {

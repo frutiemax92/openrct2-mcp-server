@@ -33,7 +33,9 @@ const occOf = (pieces: T.PlannedPiece[]) => {
     return o;
 };
 const model = { ...DEFAULT_MODEL };
-const search = (prefix: T.PlannedPiece[], start: T.TrackPose, timeMs: number) =>
+/** Vocabulaire d'avant les diagonales (9 octobre 2026) : celui avec lequel Haiku restait coincé. */
+const orthogonal = (v: T.Macro[][]) => v.filter((m) => !m.some((x) => x.op === "turn" && x.eighths));
+const search = (prefix: T.PlannedPiece[], start: T.TrackPose, timeMs: number, diagonals = false) =>
     searchSection({
         table,
         ride: wooden,
@@ -43,7 +45,7 @@ const search = (prefix: T.PlannedPiece[], start: T.TrackPose, timeMs: number) =>
         occupancy: occOf(prefix),
         env,
         bounds,
-        closureCatalog: searchCatalog(table, wooden, { steep: true }),
+        closureCatalog: searchCatalog(table, wooden, { steep: true, diagonals }),
         speedOf: (pieces, v) => simulate(model, table, pieces, v),
         simulateCircuit: (pieces) => simulate(model, table, pieces, model.stationSpeed),
         simulateFrom: (pieces, v, startPiece) => simulate(model, table, pieces, v, undefined, { startPiece }),
@@ -55,7 +57,7 @@ const search = (prefix: T.PlannedPiece[], start: T.TrackPose, timeMs: number) =>
         minInversions: 1,
         minTrains: 3,
         trainTiles: 5.4,
-        vocabulary: defaultVocabulary({ inversions: ["loop"] }),
+        vocabulary: diagonals ? defaultVocabulary({ inversions: ["loop"] }) : orthogonal(defaultVocabulary({ inversions: ["loop"] })),
         timeMs,
         results: 1,
     } satisfies SearchInput);
@@ -65,6 +67,14 @@ describe("repli quand le bout du circuit est une poche (Black Widow Sidewinder)"
         expect(r.errors).toEqual([]);
         expect(r.end).toMatchObject({ x: 100, y: 102, z: 112, rot: 1 });
         expect(search(r.pieces, r.end, 15_000).candidates.length).toBe(0);
+    }, 60_000);
+
+    it("les collines en diagonale sortent de la poche sans repli", () => {
+        const res = search(r.pieces, r.end, 15_000, true);
+        expect(res.candidates.length).toBeGreaterThan(0);
+        const c = res.candidates[0];
+        expect(c.macros.some((m) => m.op === "turn" && m.eighths === 1)).toBe(true);
+        expect([...c.pieces, ...c.closure].some((p) => p.name.startsWith("diag"))).toBe(true);
     }, 60_000);
 
     it("roomAhead signale la poche au sol, pas la même pose 7 niveaux plus haut", () => {

@@ -23,6 +23,8 @@ export interface ServerState {
     checkpoints: Map<string, { file: string; createdAt: string; summary: Record<string, unknown> }>;
     /** Couche de zones paysagères (SPEC 11.2). */
     zones: ZoneMap;
+    /** Relief modifiable (session_set_landscape) : faux par défaut, vrai seulement à la demande de l'utilisateur (SPEC 9.2). */
+    landscapeAllowed: boolean;
 }
 
 export interface ToolContext {
@@ -57,6 +59,21 @@ export class ToolError extends Error {
 
 export function toolError(code: BridgeError["code"], message: string, extra?: { details?: Record<string, unknown>; hint?: string }): never {
     throw new ToolError({ code, message, ...extra });
+}
+
+/** Refuse d'écrire le relief sans l'accord de l'utilisateur (SPEC 9.2) ; la simulation (dryRun) reste permise. */
+export function requireLandscape(ctx: ToolContext, tool: string, dryRun?: boolean): void {
+    if (ctx.state.landscapeAllowed || dryRun) return;
+    toolError("NOT_SUPPORTED_IN_MODE", `${tool} modifie le relief, verrouillé par défaut.`, {
+        hint:
+            "Adapte-toi au terrain (autre site, level, passerelle ; les montagnes russes passent au-dessus ou en tunnel). Ne terrasse que si " +
+            "l'utilisateur le demande ou l'accepte : alors session_set_landscape { allowed: true, userRequest: '<sa demande>' }.",
+    });
+}
+
+/** Suffixe de hint qui propose de terrasser, seulement si l'utilisateur l'a permis (SPEC 9.2). */
+export function landscapeHint(ctx: ToolContext, tool: string): string {
+    return ctx.state.landscapeAllowed ? ` Relief autorisé : ${tool} est aussi possible.` : "";
 }
 
 /** Plafonne une liste et signale la troncature (jamais silencieuse). */

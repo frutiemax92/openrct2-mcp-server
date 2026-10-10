@@ -1,4 +1,4 @@
-import type { RegionTile } from "@openrct2-claude/protocol";
+import { TRACK_ELEM_TYPES, type RegionTile } from "@openrct2-claude/protocol";
 import { describe, expect, it } from "vitest";
 import {
     Occupancy,
@@ -13,6 +13,7 @@ import {
     endPose,
     findTransition,
     originAt,
+    pieceAllowed,
     pieceElements,
     pieceEndingAt,
     planClosure,
@@ -124,6 +125,24 @@ describe("transitions et macros", () => {
         const junior = rideTrackInfo(rideTypeByName("junior_roller_coaster"))!;
         const r = compileMacros(table, junior, { x: 10, y: 10, z: 64, rot: 0, slope: 0, bank: 0 }, [{ op: "loop", dir: "left" }]);
         expect(r.errors.length).toBe(1);
+    });
+
+    it("refuse les pièces que le style de piste ne dessine pas (Iron Canyon : diagUp60ToFlat invisible en bois)", () => {
+        const wooden = rideTrackInfo(rideTypeByName("wooden_roller_coaster"))!;
+        const bySegName = (n: string) => table.all().find((s) => s.type === TRACK_ELEM_TYPES[n as keyof typeof TRACK_ELEM_TYPES])!;
+        for (const n of ["diagUp60ToFlat", "diagFlatToDown60", "diagDown60ToFlatLongBase", "diagFlatToUp60LongBase"]) {
+            expect(pieceAllowed(wooden, bySegName(n)), n).toBe(false);
+        }
+        for (const n of ["diagUp60ToUp25", "diagDown25ToDown60", "down60ToFlatLongBase", "diagFlatToUp25"]) {
+            expect(pieceAllowed(wooden, bySegName(n)), n).toBe(true);
+        }
+        const catalog = new Set(searchCatalog(table, wooden, { diagonals: true, steep: true }).map((s) => s.type));
+        expect(catalog.has(TRACK_ELEM_TYPES.diagDown60ToFlat)).toBe(false);
+        expect(catalog.has(TRACK_ELEM_TYPES.diagDown60ToDown25)).toBe(true);
+        // Virage incliné en pente : rangé dans slopeCurve, que la mine active, mais MineTrainCoaster.cpp ne le dessine pas.
+        const mine = rideTrackInfo(rideTypeByName("mine_train_coaster"))!;
+        expect(pieceAllowed(mine, bySegName("leftBankedQuarterTurn3TileUp25"))).toBe(false);
+        expect(pieceAllowed(mine, bySegName("leftQuarterTurn3TilesUp25"))).toBe(true);
     });
 });
 

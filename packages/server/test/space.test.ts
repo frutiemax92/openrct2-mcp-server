@@ -54,7 +54,9 @@ describe("espace : profil d'un tracé", () => {
         expect(s.stackedTiles).toBe(0);
         expect(s.elements.every((e) => e.shared === 0 && e.crossings.length === 0)).toBe(true);
         expect(s.trackTiles).toBeLessThanOrEqual(s.footprint.area);
-        expect(s.coverage).toBeCloseTo(s.trackTiles / s.footprint.area, 6);
+        // Tracé en U ouvert : rien d'enfermé, le contour est la piste seule.
+        expect(s.outline).toMatchObject({ area: s.trackTiles, holes: 0, holeCount: 0 });
+        expect(s.coverage).toBe(1);
         // Le lift ne partage rien et n'a pour voisin que la suite de la chute, 3 tuiles plus loin sur la même ligne.
         expect(s.elements[0]).toMatchObject({ kind: "lift", shared: 0, isolated: true });
         expect(s.elements[0].nearestGap).toBeGreaterThanOrEqual(2);
@@ -78,11 +80,11 @@ describe("espace : profil d'un tracé", () => {
         const s = spaceProfile(table, l.pieces);
         expect(s.closed).toBe(true);
         expect(s.footprint).toMatchObject({ w: 24, h: 17, area: 408 });
-        expect(s.coverage).toBeGreaterThan(0.43);
-        expect(s.coverage).toBeLessThan(0.47);
+        // Contour (COASTER_SPACE 7 tervicies) : 183 tuiles de piste et 29 de trous, pas les 408 du rectangle englobant.
+        expect(s.outline).toMatchObject({ area: 212, holes: 29, holeCount: 6, largestHole: 16 });
+        expect(s.coverage).toBeCloseTo(183 / 212, 6);
         expect(Math.abs(s.stackedTiles - 80)).toBeLessThanOrEqual(4);
-        expect(s.largestVoid).toMatchObject({ w: 8, h: 8 });
-        expect(s.largestVoid!.share).toBeCloseTo(0.16, 2);
+        expect(s.largestVoid!.w * s.largestVoid!.h).toBeLessThanOrEqual(16);
         expect(s.elements).toHaveLength(27);
         expect(s.elements.filter((e) => e.nearestGap === 0)).toHaveLength(21);
 
@@ -178,8 +180,9 @@ describe("espace : bounds, vue et leviers", () => {
             { op: "turn", dir: "right", size: "medium" },
         ]);
         const levers = spaceLevers(spaceProfile(table, ring.pieces, { closed: true }), ref);
-        expect(levers.some((x) => /emprise/.test(x))).toBe(true);
-        expect(levers.some((x) => /empilées/.test(x))).toBe(true);
-        expect(levers.some((x) => /vide/.test(x))).toBe(true);
+        // L'anneau enferme un grand trou : c'est lui qui le rend moins compact, pas l'absence d'empilement.
+        expect(levers.some((x) => /^contour/.test(x))).toBe(true);
+        expect(levers.some((x) => /^trou/.test(x))).toBe(true);
+        expect(levers.some((x) => /empilées/.test(x))).toBe(false);
     });
 });

@@ -452,6 +452,171 @@ Même « Black Widow Sidewinder » (7 sexdecies). La première chute droite de H
 
 Pas encore testé en jeu par Haiku.
 
+## 7 octodecies. Aucune colline en diagonale (9 octobre 2026)
+
+### Constat
+
+L'utilisateur : aucun circuit généré n'a jamais eu de colline en diagonale. Quatre causes empilées :
+
+1. Les macros ne savaient pas rester en diagonale. `turn size large` posait toujours la paire huitième vers la diagonale + huitième de retour. `straightPieces` (base de `slopeRun` et `findTransition`) exigeait `beginDirection = 0` et `endY = 0` : `hill`, `climb`, `drop`, `straight`, `level`, `brakes` n'avaient que des pièces orthogonales.
+2. `searchCatalog` excluait `TrackGroup::flat` comme groupe « spécial ». Dans le jeu (`TrackData.cpp`), ce groupe porte les huitièmes de virage, `diagFlat` et les transitions d'inclinaison diagonales, à côté des pièces couvertes et du labyrinthe. Même avec `allowDiagonals`, la fermeture avait `diagUp25` mais aucun moyen d'entrer en diagonale.
+3. La fermeture de coaster_build_plan avait `allowDiagonals: false` par défaut, et celle de coaster_search_section un catalogue sans diagonales.
+4. Le filtre anti-S-bend (`endY ≠ 0` et même direction) de search_section et le surcoût de `pieceCost` prenaient chaque droite diagonale (`endX = −32, endY = 32`) pour un S-bend.
+
+### Fait
+
+- `turn { size: 'large', eighths }` : huitièmes de tour qui alternent selon la pose (orthogonale → `…EighthToDiag`, diagonale → `…EighthToOrthogonal`). `quarters` reste deux huitièmes par quart.
+- En diagonale, `straight`, `level`, `hill`, `climb`, `drop`, `lift`, `brakes`, `block_brakes` et `booster` posent les pièces `diag*` (`straightPieces(…, diag)`, `findTransition` lit `rot`). Les macros sans pièce diagonale (hélice, inversions, s_bend, launch, photo, éléments verticaux) et les virages small/medium sont refusés avec la marche à suivre (`eighths: 1` pour revenir).
+- `searchCatalog` garde, du groupe `flat`, les seules pièces diagonales. `isSBend` ignore les droites diagonales.
+- Fermeture avec diagonales par défaut (`allowDiagonals: true`, catalogue de search_section).
+- Vocabulaire de search_section : huitième, colline ou chute en diagonale, huitième de sortie (même côté = virage de 90°, côté opposé = décalage).
+- Tests `test/diagonal.test.ts`. Effet de bord constaté sur `backtrack.test.ts` : avec les diagonales, la poche de Sidewinder (7 septdecies) a une fin sans repli (202 tuiles, 3 trains, boucle, deux collines diagonales). L'échec reste reproduit avec le vocabulaire orthogonal. `search-block-restart.test.ts` : 8 fermetures sur 866 écartées parce que l'A* remonte juste après un frein de bloc sain ; le test tolère maintenant moins de 3 %.
+
+Pas encore testé en jeu.
+
+## 7 novodecies. Excitation minimale, freins qui vident le circuit, site introuvable (9 octobre 2026)
+
+### Constat
+
+« Black Widow Diagonal » de Haiku : un coaster de bois à côté de Black Widow Trinity, 61 mph, 3 trains, compact, puis « itère jusqu'à une excitation au-dessus de 7,5 ». Un seul essai (2,67), aucun circuit fermé ensuite, et Haiku s'est arrêté pour demander quoi faire. Six causes :
+
+1. Aucun outil ne connaissait l'excitation avant l'essai. La recherche notait l'empilement et la couverture, jamais les notes. Une fermeture « valide » pouvait rouler à 5 mph de moyenne.
+2. Freins de mi-parcours qui vident le circuit : 6 freins (consigne 10) et un frein de bloc au sol, juste après la première chute. Le reste du parcours ne dépassait jamais 34 km/h (pointe à 99). Le dernier début de Haiku finissait ainsi, au bord de bounds. Trois recherches de 48 s n'ont rien donné, avec 153 écarts « frein de bloc qui ne repart pas » et 621 « A* introuvable ».
+3. La référence imposait ses inversions. Haiku a pris Trinity comme référence parce que l'utilisateur avait dit « à côté de Trinity » (un emplacement). `minInversions` valait celles de la référence (3), et 131 fermetures ont été écartées pour « trop peu d'inversions », jamais demandées.
+4. `coaster_find_site` exigeait 15 tuiles devant la station, plus le quart du grand côté derrière : aucun site de moins de ~25 tuiles de long ne passait. Les 24×18, 22×16, 16×12 de Haiku, libres et plats, étaient tous OBSTRUCTED, avec « Démolis une attraction » en conseil. Haiku a placé la station à l'œil 7 fois, et une trentaine de plans ont échoué sur bounds.
+5. Sans référence, `coaster_search_section` visait la longueur du début + 10 tuiles : rien ne poussait vers la longueur qui fait l'excitation.
+6. Trois trains de 12 voitures (5,4 tuiles) : le frein de bloc au pied du lift était refusé sans dire qu'un train plus court suffisait.
+
+### Fait
+
+- `planners/estimate.ts` : `estimateRatings`, les notes d'un circuit fermé planifié. Le simulateur exact donne les mesures d'essai : vitesse max, moyenne relevée tous les 32 ticks, segmentTime, longueur Σ((v + a) >> 10) × 42 et temps en l'air (`ExactResult.stats`, comme `Vehicle::UpdateMeasurements`). `countTrackFeatures` donne virages, chutes et inversions. `proximityFromPlan` reprend `ride_ratings_score_close_proximity` sur le cache de carte (sol, eau, chemins, autres attractions, côtés) et sur le circuit lui-même. Les multiplicateurs de l'objet sont générés dans `ride_vehicles.json` (`ratings`, `limitAirTimeBonus`, `covered` ; gen-tables). Puis `computeRatings`. Scénerie au bord de la piste et abri : 0 (absents du cache).
+- Précision : sur 145 designs RCT2, longueur et vitesse sont à moins de 1 % en médiane et l'intensité à 0,05 près. L'excitation est sous le jeu de 0,54 en moyenne, à cause de la scénerie des designs. Sur les 11 circuits mesurés du parc, la proximité du circuit sur lui-même est exacte à 1 près.
+- `minExcitement` (coaster_build_plan, coaster_search_section), gardé par circuit :
+  - coaster_build_plan note toute fermeture (`estimate`, une ligne dans summary). Sous minimum − 0,4 (`ESTIMATE_SLACK`), elle est refusée à la pose avec les pénalités et les leviers (`allowBelowExcitement` pour passer outre). Entre les deux, elle est posée avec un avertissement.
+  - coaster_search_section écarte les fermetures sous minimum − 0,4 (`rejected` « excitation estimée < x », `bestRejectedExcitement`), ajoute 60 × excitation à la note, et continue ses passes jusqu'à `timeMs` tant qu'aucune variante n'atteint le minimum. Sans référence, la longueur visée vaut 22 × E − 5 tuiles (7,5 : 160).
+  - coaster_test met en tête du summary OBJECTIF ATTEINT / NON ATTEINT, avec les leviers et la suite (checkpoint_save du meilleur, puis refaire la fin), et l'excitation estimée avant l'essai.
+- FREINS QUI VIDENT LE CIRCUIT (`energyLossWarnings`) : des freins hors arrivée après lesquels plus rien ne dépasse 45 % de la pointe sur 8 tuiles ou plus. L'avertissement va en tête des warnings et dans summary.
+- DÉBUT SANS ÉLAN (`deadStart`, search.ts) : le bout du début est à moins de 2 niveaux du sol avec un lift déjà posé, et son élan, simulé d'un seul tenant avec le début sur un plat, ne porte pas le train à 10 km/h sur 35 % de la piste qui reste. Le faisceau n'est pas lancé. Le repli (backtrack) essaie toujours de refaire la chute.
+- EMPRISE TROP PETITE : coaster_search_section refuse tout de suite quand la piste qui reste dépasse 0,6 × les tuiles libres de bounds (les circuits les plus denses posent ~0,55 tuile de piste par tuile d'emprise).
+- `minInversions` n'a plus de défaut (la référence n'impose plus ses inversions). Instructions du serveur : « à côté de X » est un emplacement, pas une référence.
+- `findSites` : la place devant la station s'adapte au site (15 tuiles si possible, 6 au moins), et `diag` sépare les rectangles libres trop courts (INVALID_PARAMS, taille minimale) des rectangles occupés (OBSTRUCTED).
+- Le refus du frein de bloc au pied du lift propose `ride_configure { carsPerTrain }`.
+- Instructions du serveur : la boucle d'itération sur un objectif de notes (ne jamais démolir le meilleur circuit testé, ne pas s'arrêter pour demander, dire tôt si les contraintes se contredisent).
+
+### Résultat (hors jeu, site relevé dans `test/black-widow-diagonal.ts`)
+
+Début de Haiku sans les freins (station (60,98), lift 22, chute raide 22, virage incliné au-dessus du lac), bounds (53,80)-(90,101), 3 trains de 12 voitures, sans référence :
+
+- minimum 7,5, longueur visée 130 : 3 variantes en 13,5 s (142-145 tuiles, 3 trains, excitation estimée 7,13-7,16, intensité 9,3-9,8). Les 76 s suivantes ne trouvent pas mieux ;
+- longueur visée 160 : 7,25 estimée (165 tuiles, 896 m).
+
+Avec la marge de l'estimation (0,3 à 0,5), on attend 7,4 à 7,7 en jeu. Le même début avec les freins de Haiku, consigne 2 et sans frein de bloc : DÉBUT SANS ÉLAN en 36 ms. Tests `test/estimate.test.ts`. Pas encore testé en jeu.
+
+## 7 vicies. Lift trop bas pour l'excitation, trains sans référence (9 octobre 2026)
+
+### Constat
+
+« Black Widow Trinity Wood » de Haiku : un coaster de bois à côté de Black Widow Trinity, excitation au-dessus de 7,5, 3 trains. Le circuit n'a jamais été fermé. Trois causes :
+
+1. Rien ne reliait l'excitation demandée à la hauteur du début. Un premier début (lift 17, chute 18, ~89 km/h) finissait coincé contre le lac et Titan. Haiku a refait un lift de 13, mais la chute de 14 passait sous le terrain au bas de la pente : il l'a coupée à 10 au jugé. Pourtant, 13 passaient (~75 km/h). La chute de 10 donne ~66 km/h. `minExcitement` n'a été passé qu'à la première recherche, qui a cherché 21 s pour répondre « meilleure fin estimée 6,12 ». Sur les designs RCT2, aucune montagne russe qui atteint 7,5 ne roule sous 72 km/h.
+2. `reference { trains: 3 }` sans ride ni design était refusé, et aucun autre argument ne donnait le nombre de trains. La recherche n'a donc pas posé de frein de bloc de mi-parcours. Haiku l'a posé à la main au bout de 8 droites, à 3 niveaux du sol : abordé à 65 km/h, il en sortait à 39. Il l'a ensuite mis dans un vocabulaire réduit, sous la forme « droite, frein de bloc, droite ». Dans les designs RCT2, un frein de bloc de mi-parcours est abordé entre 7 et 47 km/h.
+3. L'exemple de `coaster_create` proposait un lift de 8 et un virage incliné au sommet, refusé depuis (VIRAGE INCLINÉ TROP LENT).
+
+### Fait
+
+- `speedForExcitement(E)` = min(70, 20 × E − 80) km/h (estimate.ts). Ce seuil vient des designs RCT2 avec leur scénerie : 7,5 donne 70 et 7 donne 60. Seule exception, Calamity Mine (mine train, 7,4 à 62 km/h). `firstDropSpeed` mesure la vitesse de pointe une fois le train entier sorti de la première chute, en simulant 3 tuiles de plat après celle-ci. Une chute qui finit à plat au bout d'un plan ouvert compte comme finie. `liftForSpeed` donne la plus petite hauteur de lift et de chute qui atteint une vitesse, avec le train du circuit.
+- LIFT TROP BAS POUR L'EXCITATION : coaster_build_plan refuse un plan qui finit la première chute sous ce seuil (`allowBelowExcitement` pour passer outre). coaster_search_section refuse tout de suite de chercher une fin dans ce cas. Ses replis ne refont jamais une chute plus lente que le seuil. Le conseil donne une hauteur de lift qui vise le seuil + 10 km/h (designs de 7,5 à 8 : médiane 83 km/h) et la place nécessaire devant la station.
+- Une chute qui passe sous le terrain : le message OBSTRUCTED donne la plus grande hauteur de cette chute qui passe (`dropFits`) et rappelle la vitesse exigée.
+- `minExcitement` et `trains` sont acceptés dès coaster_create, et gardés par circuit. Le summary de coaster_create donne la vitesse minimale, la hauteur de lift conseillée et la longueur droite nécessaire. L'exemple de next_hints vaut lift H + chute H dès le sommet, sans virage incliné.
+- `trains` (coaster_create, coaster_build_plan, coaster_search_section) fixe le nombre de trains sans référence. `reference { trains }` sans ride ni design est lu comme `trains`. La recherche pose les freins de bloc de mi-parcours et l'arrivée en gare. La fermeture est refusée avec moins de sections (TROP PEU DE SECTIONS DE BLOC).
+- FREIN DE BLOC LANCÉ : un frein de bloc de mi-parcours abordé au-delà de 50 km/h (`BLOCK_MAX_KMH`) est refusé dans coaster_build_plan et écarté dans la recherche. Il reste permis dans l'arrivée en gare et devant une chaîne. Dans la recherche, la vitesse se mesure sur le frein de bloc lui-même, après les freins de l'élément. La pièce qui suit un frein de bloc doit descendre : une hélice ou un virage incliné « en descente » commence par une pièce d'inclinaison à plat, que le train arrêté reprend à ~7 km/h. La fermeture A* ne part jamais directement d'un frein de bloc.
+- Description de `vocabulary` : laisser le défaut.
+
+### Résultat (hors jeu)
+
+Test `test/lift-for-excitement.test.ts`, avec un train MFT de 12 voitures et une station de 6 tuiles au niveau 7 :
+
+- début de Haiku (lift 13, virage, chute 10) : refusé à ~66 km/h ;
+- premier essai (lift 17, chute 18) : accepté ;
+- `liftForSpeed(70)` vaut 12 niveaux.
+
+Tous les designs RCT2 de montagne russe à 6,5 et plus passent le seuil à 3 km/h près, sauf Calamity Mine. La suite complète passe (234 tests). Pas encore testé en jeu.
+
+## 7 unvicies. Début arrêté au sommet du lift (9 octobre 2026)
+
+« Custom Wooden Loop » (Haiku, objectif 7,5, sans référence). Le dryRun lift 15 + chute raide sort de bounds. L'indice OBSTRUCTED dit « raccourcis l'élément » : Haiku retire la chute et pose le lift seul (12, puis 14, puis 12). Trois sites, cinq recherches de 48 s, aucune fin. Rien n'avait jugé le début, pour deux raisons :
+
+- LIFT TROP BAS ne jugeait qu'une chute finie (`firstDropSpeed` vaut null tant que le circuit finit au sommet du lift).
+- La recherche partait du sommet avec tout son vocabulaire. Elle prenait un virage au pas, puis calait ou ne fermait pas. Les fermetures sans minimum plafonnaient à 5,64 et 6,35.
+
+Le dernier lift (12, sommet à 6 tuiles du bord de bounds) donnerait 72 km/h avec une chute idéale. Mais aucune chute assez rapide ne tenait avant le bord.
+
+Corrections :
+
+1. `endsAtLiftTop` et `liftTopSpeed` (estimate.ts) donnent la vitesse de la meilleure chute possible depuis le sommet : raide, droite, jusqu'au niveau de la station ou au sol sous le sommet s'il est plus bas (`liftFloorZ`). `liftSpeedProblem` s'en sert quand aucune chute n'est finie. `coaster_build_plan` (plan qui finit au sommet) et `coaster_search_section` refusent aussitôt un lift trop bas.
+2. `SearchInput.firstDrop { minKmh, speed }` : quand le début finit au sommet du lift avec `minExcitement`, le premier élément vient de `firstDropVocabulary`. Ce sont des chutes raides ou à 25°, de la plus haute à 2 niveaux, droites ou en diagonale (huitième sans inclinaison au sommet). Chacune est gardée seulement si la vitesse au bas atteint `speedForExcitement`. Sinon, le rejet est compté (« première chute trop lente ») et `firstDropKmh` donne la meilleure. Le summary devient PREMIÈRE CHUTE IMPOSSIBLE, avec la marche à suivre.
+3. OBSTRUCTED sur le début (lift, première chute) avec `minExcitement` : `dropFits` couvre aussi bounds, les autres attractions et les chemins, plus seulement le terrain. La chute qui tient est jugée sur sa vitesse. Si elle suffit, l'erreur le dit. Sinon l'indice (`firstDropRelocateHint`) ne propose jamais de raccourcir. Il donne la longueur droite nécessaire et, dans l'ordre : virage avant le lift pour l'orienter le long du grand côté, chute en diagonale, terrain plus bas ou lac, autre site ou station retournée.
+
+Test : first-drop-at-lift-top.test.ts. Sur le début de Haiku (lift 12 et lift 15, bord à x 56), la recherche s'arrête en moins de 5 s avec `firstDropKmh` < 70. Avec bounds jusqu'à x 76, chaque variante commence par une chute d'au moins 70 km/h. Suite complète : 240 tests. Pas encore testé en jeu.
+
+## 7 duovicies. Hauteur du frein de bloc de mi-parcours (9 octobre 2026)
+
+« Custom Wooden » (Haiku, 3 trains). L'utilisateur demande un frein de bloc plus près du milieu du circuit. Haiku retire 60 pièces et se retrouve à 92 km/h au niveau de la station. Il tente level, brakes 3, block_brakes, drop 2 : la chute passe sous le terrain. Il pose alors level, brakes 3, block_brakes, sans chute. Les freins font tomber le train de 92 à 52 km/h au ras du sol. Rien ne lui disait jusqu'où monter sur l'élan pour poser le frein de bloc en hauteur.
+
+Deux défauts :
+
+- FREIN DE BLOC LANCÉ ne jugeait pas un circuit ouvert qui finit sur des freins : il le prenait pour l'arrivée en gare.
+- Des brakes juste avant le frein de bloc le faisaient passer sous 50 km/h. Le défaut restait le même : l'énergie perdue au sol.
+
+Corrections :
+
+1. `blockBrakeWindow` (estimate.ts) simule `climb { h }` puis `block_brakes` depuis le bout du circuit, de h = 0 à 48. Elle renvoie la plus petite montée qui fait aborder le frein de bloc à 50 km/h au plus, et la plus grande où le train l'aborde encore à 10 km/h au moins (`BLOCK_MIN_KMH`). Terrain et obstacles ignorés. `blockBrakeWindowLine` en fait une ligne. Exemple : à 103 km/h au niveau 7, montée de 18 à 22 niveaux, sommet au niveau 25 à 29.
+2. coaster_build_plan : tant qu'un frein de bloc de mi-parcours manque pour les trains voulus (sections < trains, l'arrivée en gare ajoutera la dernière), la fenêtre depuis le bout du plan est dans summary et dans `speeds.blockBrakeAhead`. Elle n'apparaît qu'une fois la première chute finie.
+3. `fastBlockBrakes` : un bout de circuit ouvert sur des freins n'est l'arrivée que s'il est au niveau de la station, à 4 tuiles au plus d'elle. Nouveau refus FREINS AVANT LE FREIN DE BLOC : des brakes qui ôtent plus de 20 km/h juste avant un frein de bloc de mi-parcours. Les deux refus donnent la fenêtre depuis le début de l'approche.
+
+Test : block-brake-window.test.ts. Suite complète : 246 tests. Pas encore testé en jeu.
+
+## 7 tervicies. Compacité = contour vu de dessus, pas empilement (9 octobre 2026)
+
+Constat de l'utilisateur. Haiku avait construit un coaster correct, mais aucune modification ne trouvait de fermeture. La « compacité » du serveur imposait de faire tenir le circuit dans un nombre de tuiles empilées. Empiler rend un circuit compact, mais exiger l'empilement réduit fortement les combinaisons possibles. Ce que l'utilisateur entend par compact : tracer une ligne autour de la piste vue de dessus et compter les tuiles qu'elle enferme. Un circuit compact ne laisse pas de trous. Rolling Thunder fait deux grandes boucles autour du vide et n'est pas compact ; Whiteout l'est.
+
+Avant, quatre critères bloquaient la fermeture (7 quater) : rectangle englobant ≤ 1,3 ×, densité sur ce rectangle ≥ 75 %, tuiles empilées ≥ 40 % et dessous du lift ≥ 25 % de la référence. `coaster_search_section` notait ses branches sur l'empilement (3 points par tuile, 2 de plus sous le lift), sans que ses fins garantissent les 40 %. `coaster_build_plan` refusait alors la fermeture.
+
+Mesure (`space.ts`, `enclosedHoles`) : les tuiles de piste vues de dessus, puis un remplissage depuis le bord du rectangle englobant par les tuiles vides (4-connexité). Une piste en diagonale, dont les tuiles se touchent par un coin, ferme donc le passage. Les tuiles vides jamais atteintes sont des trous. `outline.area` = tuiles de piste + trous. Un circuit fermé enferme toujours son intérieur ; une échancrure ouverte sur l'extérieur ne compte pas.
+
+| Design | Rectangle | Piste | Contour | Trous | Couverture |
+|---|---|---|---|---|---|
+| Whiteout | 27×14 = 378 | 206 | 231 | 25 (10 petits) | 0,89 |
+| Rolling Thunder (Track 1) | 26×62 = 1612 | 202 | 665 | 463 (2, dont 249) | 0,30 |
+| Frightmare | 24×17 = 408 | 183 | 212 | 29 | 0,86 |
+| Black Widow | 23×14 = 322 | 169 | 193 | 24 | 0,88 |
+
+Corrections :
+
+1. `SpaceProfile.outline` { area, holes, holeCount, largestHole }. `coverage` = piste / contour (1 = aucun trou). `largestVoid` est cherché dans les trous seulement. `spaceView` et `spaceLevers` parlent de contour et de trous ; le levier « empilées » disparaît.
+2. Cible de référence : `footprintArea` = contour, `density` = longueur / contour (`outlineDensity`), `holes`. Le rectangle englobant ne sert plus qu'aux côtés (`footprintSides`, `suggestedBounds`, `coaster_find_site`). Seul critère de compacité bloquant : contour ≤ 1,3 × celui de la référence (`FOOTPRINT_MAX`, agrandi par les modifications comme avant). Avec la longueur minimale (90 %), il borne aussi la densité. Empilement, dessous du lift et densité restent affichés dans `target`, mais ne bloquent plus. `DENSITY_MIN`, `STACKED_MIN` et `LIFT_SHARED_MIN` sont supprimés.
+3. `searchSection` : une fermeture est notée sur son contour exact (−2 par tuile), sans bonus d'empilement en plus, puisque l'empilement réduit déjà le contour. Une branche ouverte gagne 3 par tuile posée sur ou sous une piste plus ancienne et 1,5 par tuile posée contre elle (`touch`, Tchebychev 1) : côte à côte compte comme empilé. Le bonus du dessous du lift est supprimé. Un essai de trous estimés dans le faisceau (corde droite du bout de la branche à l'arrivée) a été abandonné : sur le site de Black Widow Sidewinder (backtrack.test.ts), la corde longe le lift et les chemins empêchent de le serrer, donc même à 0,25 par tuile plus aucune fin n'était trouvée. Le S-bend d'une fermeture coûte 3 × la pénalité du faisceau : sinon 6 tuiles de contour en moins suffisaient à le préférer (search.test.ts).
+4. Textes des outils (`reference`, coaster_build_plan, coaster_describe, coaster_compare, coaster_search_section, consignes du serveur) : « contour vu de dessus, sans trous », plus « vise les tuiles empilées ».
+
+Tests : space.test.ts (contour de Frightmare, U ouvert sans trou, anneau autour d'un trou), target.test.ts (anneau refusé sur son contour et non sur l'empilement ; Black Widow 193 tuiles). Suite complète : 247 tests. Pas encore testé en jeu.
+
+## 7 quatervicies. Timber Loop : aucune fermeture sur un site vallonné (10 octobre 2026)
+
+Constat. Haiku devait finir Timber Loop (ride 3 : station au niveau 22 en (12,110), à 15 niveaux du sol, lift de 20, chute jusqu'en (24,143) au niveau 13, au ras d'un relief entre les niveaux 10 et 20), avec 3 trains et une excitation de 7,5. Il a lancé trois recherches, chaque fois « 0 fermetures tentées » en 0 s, depuis le bout actuel comme après repli. Il a conclu à un manque de place et proposé de démolir. Reproduit en jeu sur une instance headless (port 38492) chargée du checkpoint `timber-loop-haiku-open`.
+
+Causes, dans l'ordre où elles apparaissaient :
+
+1. **Relief plus strict que le jeu.** `blockProblem` refusait tout bloc dont la base était sous le coin le plus haut de la tuile. `MapCanConstructWithClearAt` ne regarde que les coins des quarts que le bloc occupe (`QuarterTile`), et sur un quart relevé (`zQuarter`, côté haut d'une pièce en pente) il tolère un coin jusqu'à 2 niveaux au-dessus de la base. Un bloc relevé sur ses 4 quarts n'est pas contrôlé du tout. Au bout de Timber Loop, 965 éléments sur 1130 étaient refusés « sous le terrain » et le faisceau mourait au 2e élément : aucune montée ne longeait la pente. Corrigé : gen-tables extrait `SequenceClearance.quarterTile` (`TRACK_BLOCK_QUARTERS`), `pieceElements` donne `q` tourné (`rotateQuarters` = `QuarterTile::Rotate`), et `cutsSurface` reprend la règle du jeu (`surfaceCorners` = `GetSlopeCornerHeights`). Sans `q`, l'ancienne règle prudente reste.
+2. **Branches sous la station sans élan.** Une fois le faisceau vivant, il gardait des centaines de branches arrivées 3 à 9 niveaux sous la station, à 30-45 km/h, toutes refusées par l'A*. Corrigé : `SearchInput.energyK` (= `SpeedModel.K`, mph² par niveau). Une branche dont la hauteur d'énergie (niveau + v²/K) est sous l'entrée de l'arrivée est coupée dès la pose : le frottement ne fait que la baisser. Le retour vers la station compte aussi les niveaux à remonter (`homeDistance`).
+3. **A\* enlisé devant l'arrivée.** L'heuristique prenait une pose à 1 tuile de l'arrivée, mais tournée à l'envers, pour presque arrivée (2,5 au lieu d'un demi-tour de ~10). Les fermetures de 7 à 15 pièces demandaient 8 000 à 30 000 expansions (4 000 permises). Corrigé en deux temps. `turnCost` est une table de virage à plat sans obstacle, une par catalogue et par direction de départ ; c'est une borne inférieure. `costToGoal` est un Dijkstra à rebours depuis l'arrivée, avec le relief et la piste déjà posée, calculé une fois par recherche. Il sert de heuristique exacte près de la station, vaut au moins la frontière ailleurs, et rend une pose impossible quand l'exploration est complète, ce qui coupe les poches sans les explorer.
+4. **Recherche et pose en désaccord sur les freins de bloc.** La meilleure variante trouvée était refusée par `coaster_build_plan`. D'abord FREINS AVANT LE FREIN DE BLOC (4 brakes, 72 → 34 km/h), puis FREIN DE BLOC LANCÉ (50 km/h dans le faisceau par morceaux, 56 sur le circuit entier). Corrigé : `fastBlockBrakes` passe dans search.ts et juge chaque fermeture sur le circuit entier simulé. Un contrôle par morceaux dans le faisceau a été essayé puis retiré : il exagérait la perte et faisait échouer la recherche de Black Widow Diagonal (estimate.test.ts).
+
+Diagnostic : une fermeture refusée parce que la montée de l'A* empêche un frein de bloc sain de repartir a sa propre cause, « fermeture qui empêche la repartie du frein de bloc ».
+
+Résultat (instance headless, outil réel). Sans minimum, le bout de Timber Loop donne 3 variantes en 16 s ; avant, il n'y en avait aucune. Une variante de 122 tuiles a été posée en entier par le jeu (52/52 pièces, circuit fermé). À l'essai, elle fait 6,42 / 8,63 / 4,57, et l'estimation donnait 6,42. Avec `minExcitement` 7,5 (longueur visée 160 tuiles), aucune fin : la recherche ferme (668 fermetures tentées), mais les refus sont physiques (calage, repartie après le frein de bloc). La station est à 15 niveaux du sol, et avec 3 trains la seconde moitié repart arrêtée du frein de bloc de mi-parcours.
+
+Tests : timber-loop-terrain.test.ts, avec le site relevé en jeu (test/fixtures/timber-loop-site.json). Il couvre les quarts de tuile, une montée le long de la pente depuis le bout, la fermeture A* avec `costToGoal` (9 pièces en moins de 4 000 expansions, poche refusée sans exploration) et une recherche à 3 trains qui trouve une fin posable. search-block-restart.test.ts passe en 13 s au lieu de 24.
+
 ## 8. Verticalité (relief)
 
 > Ajouté le 8 octobre 2026, à la demande de l'utilisateur, après le second essai compact de Nightmare Frenzy (7,37 / 8,06 / 4,23 sur 24×19, `nf-compact-2`).

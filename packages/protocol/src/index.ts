@@ -8,4 +8,5 @@ export { RIDE_TYPES, TRACK_GROUPS, type RideTypeInfo } from "./generated/rideTyp
 export { CHEAT_TYPES, type CheatName } from "./generated/cheatTypes.js";
 export { TRACK_ELEM_TYPES, type TrackElemName } from "./generated/trackElemTypes.js";
 export { RIDE_RATINGS, RATING_FLAGS, type RideRatingsData, type RatingsModifierData } from "./generated/rideRatings.js";
-export { TRACK_BLOCK_CLEARANCE, TRACK_BLOCK_VERTICAL } from "./generated/trackClearance.js";
+export { TRACK_BLOCK_CLEARANCE, TRACK_BLOCK_QUARTERS, TRACK_BLOCK_VERTICAL } from "./generated/trackClearance.js";
+export { TRACK_STYLE_PIECES } from "./generated/trackPaint.js";

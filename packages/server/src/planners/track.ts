@@ -18,9 +18,11 @@ import {
     RIDE_RATINGS,
     RIDE_TYPES,
     TRACK_BLOCK_CLEARANCE,
+    TRACK_BLOCK_QUARTERS,
     TRACK_BLOCK_VERTICAL,
     TRACK_ELEM_TYPES,
     TRACK_GROUPS,
+    TRACK_STYLE_PIECES,
     rotateOffset,
     type Direction,
     type RegionTile,
@@ -177,15 +179,36 @@ export interface TrackBlock {
     /** SequenceClearance.clearanceZ du bloc (unités monde), sans la hauteur du véhicule. */
     cz: number;
     vertical?: boolean;
+    /**
+     * Quarts de tuile du bloc, tournés (QuarterTile::Rotate) : bits 0-3 occupés (N, E, S, O), bits 4-7 relevés. Absent :
+     * contrôle du relief prudent (coin le plus haut de la tuile).
+     */
+    q?: number;
+}
+
+/** QuarterTile::Rotate : rotation à gauche de chaque quartet (quarts occupés, quarts relevés). */
+export function rotateQuarters(q: number, direction: number): number {
+    const r = direction & 3;
+    const rot = (n: number) => ((n << r) | (n >> (4 - r))) & 15;
+    return rot(q & 15) | (rot((q >> 4) & 15) << 4);
 }
 
 /** Blocs occupés (tuiles et z monde). */
 export function pieceElements(piece: TrackPieceInfo, seg: TrackSegmentInfo): TrackBlock[] {
     const cz = TRACK_BLOCK_CLEARANCE[seg.type];
     const vert = TRACK_BLOCK_VERTICAL[seg.type];
+    const quarters = TRACK_BLOCK_QUARTERS[seg.type];
     return seg.elements.map((e, i) => {
         const o = rotateOffset(e, piece.direction);
-        return { x: piece.x + Math.round(o.x / 32), y: piece.y + Math.round(o.y / 32), z: piece.z + e.z, cz: cz?.[i] ?? 0, vertical: vert?.includes(i) || undefined };
+        const q = quarters?.[i];
+        return {
+            x: piece.x + Math.round(o.x / 32),
+            y: piece.y + Math.round(o.y / 32),
+            z: piece.z + e.z,
+            cz: cz?.[i] ?? 0,
+            vertical: vert?.includes(i) || undefined,
+            ...(q !== undefined ? { q: rotateQuarters(q, piece.direction) } : {}),
+        };
     });
 }
 
@@ -242,6 +265,8 @@ export interface RideTrackInfo {
     rideType: number;
     name: string;
     groups: Set<number>;
+    /** Pièces que la fonction de dessin du type sait dessiner (TRACK_STYLE_PIECES) ; les autres seraient invisibles. */
+    drawable: Set<number>;
     supportsSteepLift: boolean;
 }
 
@@ -249,8 +274,24 @@ export function rideTrackInfo(rideType: number): RideTrackInfo | null {
     const info = RIDE_TYPES.find((r) => r.rideType === rideType);
     if (!info || !info.trackGroups.length || info.startTrackPieceName !== "endStation") return null;
     const groups = new Set(info.trackGroups);
-    return { rideType, name: info.name, groups, supportsSteepLift: groups.has(G.liftHillSteep) };
+    const drawable = new Set(info.trackStyle ? TRACK_STYLE_PIECES[info.trackStyle] ?? [] : []);
+    return { rideType, name: info.name, groups, drawable, supportsSteepLift: groups.has(G.liftHillSteep) };
 }
+
+const TE = TRACK_ELEM_TYPES as Record<string, number>;
+/**
+ * Pièces dont le `trackGroup` (TrackData.cpp) ne suffit pas : la fenêtre de construction exige d'autres groupes
+ * (RideConstruction.cpp, ui). Les diagonales plat ↔ 60° sont rangées dans diagSlopeSteepUp/Down mais demandent
+ * flatToSteepSlope (base courte) ou diagSlopeSteepLong ; leurs bases longues, rangées dans slopeSteepLong, demandent
+ * diagSlopeSteepLong. Sans ce contrôle, le bois (qui n'a aucun des deux) les posait invisibles (SPEC F37).
+ */
+const REQUIRED_GROUPS = new Map<number, number[]>([
+    ...["diagFlatToUp60", "diagUp60ToFlat", "diagFlatToDown60", "diagDown60ToFlat"].map((n): [number, number[]] => [TE[n], [G.flatToSteepSlope, G.diagSlopeSteepLong]]),
+    ...["diagFlatToUp60LongBase", "diagUp60ToFlatLongBase", "diagFlatToDown60LongBase", "diagDown60ToFlatLongBase"].map((n): [number, number[]] => [
+        TE[n],
+        [G.diagSlopeSteepLong],
+    ]),
+]);
 
 export interface CatalogOptions {
     inversions?: boolean;
@@ -260,16 +301,24 @@ export interface CatalogOptions {
     chainedClimbsOnly?: boolean;
 }
 
+/** S-bend : pièce orthogonale qui décale la piste sans changer de direction (pas une droite diagonale). */
+export const isSBend = (s: TrackSegmentInfo): boolean => s.endY !== 0 && s.endDirection === s.beginDirection && !(s.beginDirection & 4);
+
 const isSteep = (s: number) => s === PITCH.up60 || s === PITCH.down60 || s === PITCH.up90 || s === PITCH.down90;
 
 /** Pièces de géométrie utilisables par une recherche (fermeture, transitions). */
 export function searchCatalog(table: SegmentTable, ride: RideTrackInfo, opts: CatalogOptions = {}): TrackSegmentInfo[] {
     return table.all().filter((s) => {
-        if (!ride.groups.has(s.trackGroup) || SPECIAL_GROUPS.has(s.trackGroup)) return false;
+        if (!pieceAllowed(ride, s)) return false;
+        // TrackGroup::flat regroupe, dans le jeu, les huitièmes de virage, diagFlat et les transitions d'inclinaison
+        // diagonales (TrackData.cpp) avec des pièces hors parcours (couvertes, labyrinthe) : seules les premières servent.
+        // L'exclure en bloc privait la fermeture de toute entrée en diagonale.
+        const diagonal = ((s.beginDirection | s.endDirection) & 4) !== 0;
+        if (SPECIAL_GROUPS.has(s.trackGroup) && !(s.trackGroup === G.flat && diagonal)) return false;
         if (s.flags?.onlyAllowedUnderwater) return false;
         const inv = !!s.flags?.isInversion || s.beginBank === ROLL.upsideDown || s.endBank === ROLL.upsideDown;
         if (inv && !opts.inversions) return false;
-        if (((s.beginDirection | s.endDirection) & 4) && !opts.diagonals) return false;
+        if (diagonal && !opts.diagonals) return false;
         if ((isSteep(s.beginSlope) || isSteep(s.endSlope)) && !opts.steep) return false;
         if (s.beginSlope === PITCH.up90 || s.endSlope === PITCH.up90 || s.beginSlope === PITCH.down90 || s.endSlope === PITCH.down90) return false;
         if (opts.chainedClimbsOnly && climbs(s)) {
@@ -280,9 +329,15 @@ export function searchCatalog(table: SegmentTable, ride: RideTrackInfo, opts: Ca
     });
 }
 
-/** Le type d'attraction autorise-t-il cette pièce (groupe constructible) ? */
+/**
+ * Le type d'attraction autorise-t-il cette pièce ? Groupe constructible, groupes exigés par la fenêtre de construction
+ * (REQUIRED_GROUPS) et pièce dessinée par le style de piste : trackplace ne vérifie rien de tout cela.
+ */
 export function pieceAllowed(ride: RideTrackInfo, seg: TrackSegmentInfo): boolean {
-    return ride.groups.has(seg.trackGroup);
+    if (!ride.groups.has(seg.trackGroup)) return false;
+    const required = REQUIRED_GROUPS.get(seg.type);
+    if (required && !required.some((g) => ride.groups.has(g))) return false;
+    return ride.drawable.has(seg.type);
 }
 
 // ---------------------------------------------------------------------------
@@ -392,19 +447,80 @@ export function groundTopZ(t: RegionTile): number {
     return Math.max(lvl, t.w || 0) * 16;
 }
 
+/**
+ * Le bloc est-il entièrement sous la surface (tunnel) ? Comme MapCanConstructWithClearAt (ELEMENT_IS_UNDERGROUND) :
+ * la base de la surface est au moins au sommet du dégagement du bloc, véhicule compris.
+ */
+export function blockUnderground(env: TrackEnv, e: { x: number; y: number; z: number; cz?: number; vertical?: boolean; q?: number }): boolean {
+    const t = env.get(e.x, e.y);
+    return !!t && t.h * 16 >= blockSpan({ ...e, cz: e.cz ?? 0 }, env.clearance ?? DEFAULT_CLEARANCE)[1];
+}
+
+/** Hauteurs relatives des coins (haut, droite, bas, gauche) par pente de surface (Slope.cpp, kSlopeRelativeCornerHeights). */
+const SLOPE_CORNERS: readonly (readonly [number, number, number, number])[] = [
+    [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 1, 1], [1, 0, 0, 0], [1, 0, 1, 0], [1, 0, 0, 1], [1, 0, 1, 1],
+    [0, 1, 0, 0], [0, 1, 1, 0], [0, 1, 0, 1], [0, 1, 1, 1], [1, 1, 0, 0], [1, 1, 1, 0], [1, 1, 0, 1], [1, 1, 1, 1],
+    [0, 0, 0, 0], [0, 0, 1, 0], [0, 0, 0, 1], [0, 0, 1, 1], [1, 0, 0, 0], [1, 0, 1, 0], [1, 0, 0, 1], [1, 0, 1, 2],
+    [0, 1, 0, 0], [0, 1, 1, 0], [0, 1, 0, 1], [0, 1, 2, 1], [1, 1, 0, 0], [1, 2, 1, 0], [2, 1, 0, 1], [1, 1, 1, 1],
+];
+
+/** Hauteurs des coins N, E, S, O de la surface (GetSlopeCornerHeights), unités monde. */
+export function surfaceCorners(t: RegionTile): [number, number, number, number] {
+    const [top, right, bottom, left] = SLOPE_CORNERS[t.s & 31];
+    const z = t.h * 16;
+    return [z + bottom * 16, z + left * 16, z + top * 16, z + right * 16];
+}
+
+/**
+ * Le bloc coupe-t-il la surface (hors tunnel) ? MapCanConstructWithClearAt : seuls comptent les coins des quarts que
+ * le bloc occupe ; sur un quart relevé (pièce en pente), le coin peut monter jusqu'à 2 niveaux au-dessus de la base ;
+ * un bloc relevé sur ses 4 quarts n'est pas contrôlé. Jusqu'au 10 octobre 2026 le serveur exigeait le coin le plus
+ * haut de la tuile pour tout bloc : sur un site vallonné, aucune montée ni aucun virage ne longeait le relief, et la
+ * recherche de Timber Loop (Haiku) s'éteignait au deuxième élément. Sans quarts connus : coin le plus haut.
+ */
+export function cutsSurface(t: RegionTile, e: { z: number; q?: number }): boolean {
+    if (e.q === undefined) return e.z < groundTopZ(t);
+    const zq = (e.q >> 4) & 15;
+    if (zq === 15) return false;
+    const base = floor8(e.z);
+    const corners = surfaceCorners(t);
+    for (let i = 0; i < 4; i++) {
+        if (!(e.q & (1 << i))) continue;
+        if (!(zq & (1 << i)) && base < corners[i]) return true;
+        if (base + 32 < corners[i]) return true;
+    }
+    return false;
+}
+
 /** Raison pour laquelle un bloc de piste ne peut pas être posé à cet endroit, ou null (contrôle côté serveur, prudent). */
-export function blockProblem(env: TrackEnv, e: { x: number; y: number; z: number; cz?: number; vertical?: boolean }): string | null {
+export function blockProblem(env: TrackEnv, e: { x: number; y: number; z: number; cz?: number; vertical?: boolean; q?: number }): string | null {
     if (e.x < 1 || e.y < 1 || e.x >= env.mapSize.x - 1 || e.y >= env.mapSize.y - 1) return "hors carte";
     const t = env.get(e.x, e.y);
     if (!t) return "hors zone lue";
     if (!(t.o & 3) && !env.sandbox) return "terrain non possédé";
-    if (e.z < groundTopZ(t)) return "sous le terrain";
+    // Au-dessus des coins qu'il couvre (`cutsSurface`) et de l'eau, ou entièrement sous la surface (tunnel) ; entre les
+    // deux, il coupe le relief.
+    if ((cutsSurface(t, e) || e.z < (t.w || 0) * 16) && !blockUnderground(env, e)) return "sous le terrain";
     for (const p of t.p ?? []) if (Math.abs(p.l * 16 - e.z) < 48) return p.q ? "file d'attente" : "chemin";
     for (const en of t.e ?? []) if (Math.abs(en.l * 16 - e.z) < 64) return "entrée/sortie";
     if (t.r?.some((r) => r !== env.rideId) && otherRideClash(env, t, e)) return "autre attraction";
     if (t.lg) return "grande scénerie";
     return null;
 }
+
+/**
+ * Pièce à moitié dehors et à moitié sous terre (TrackPlaceAction : STR_CANT_BUILD_PARTLY_ABOVE_AND_PARTLY_BELOW_GROUND ;
+ * aucune pièce de montagne russe n'a canBePartlyUnderground) : le premier bloc qui change de côté, ou null. À combiner
+ * avec `blockProblem`, qui contrôle chaque bloc seul.
+ */
+export function groundMix(env: TrackEnv, el: TrackBlock[]): TrackBlock | null {
+    if (el.length < 2) return null;
+    const first = blockUnderground(env, el[0]);
+    return el.find((e) => blockUnderground(env, e) !== first) ?? null;
+}
+
+/** Message de `groundMix` pour un bloc fautif. */
+export const GROUND_MIX = "pièce à moitié sous le terrain";
 
 /**
  * Le bloc chevauche-t-il une pièce d'une autre attraction sur la tuile ? Même règle que MapCanConstructWithClearAt :
@@ -424,21 +540,35 @@ function otherRideClash(env: TrackEnv, t: RegionTile, e: { x: number; y: number;
 // Transitions de pente et d'inclinaison
 // ---------------------------------------------------------------------------
 
-/** Pièces droites (sans virage ni diagonale) qui changent la pente et/ou l'inclinaison. */
-function straightPieces(table: SegmentTable, ride: RideTrackInfo, opts: CatalogOptions): TrackSegmentInfo[] {
-    return searchCatalog(table, ride, opts).filter((s) => s.turnDirection === "straight" && s.endY === 0 && s.beginDirection === 0 && s.endDirection === 0);
+/**
+ * Pièces droites (sans virage) qui changent la pente et/ou l'inclinaison, orthogonales ou diagonales (diagUp25,
+ * diagFlatToDown60… : beginDirection = endDirection = 4, un pas en diagonale). Sans `diag`, seules les orthogonales
+ * (les S-bends, droits mais décalés, ont endY ≠ 0).
+ */
+function straightPieces(table: SegmentTable, ride: RideTrackInfo, opts: CatalogOptions, diag = false): TrackSegmentInfo[] {
+    const d = diag ? 4 : 0;
+    return searchCatalog(table, ride, { ...opts, diagonals: diag }).filter(
+        (s) => s.turnDirection === "straight" && s.beginDirection === d && s.endDirection === d && (diag || s.endY === 0),
+    );
 }
+
+/** La pose est-elle en diagonale (bit 2 de rot) ? */
+export const isDiagonal = (p: { rot?: number }): boolean => ((p.rot ?? 0) & 4) !== 0;
+
+/** Pièce droite de même fonction en diagonale (flat → diagFlat), ou le nom tel quel hors diagonale. */
+const diagName = (name: string, diag: boolean): string => (diag ? `diag${name[0].toUpperCase()}${name.slice(1)}` : name);
 
 /** Plus courte suite de pièces droites menant de (pente, inclinaison) à l'état voulu (≤ 4 pièces). */
 export function findTransition(
     table: SegmentTable,
     ride: RideTrackInfo,
-    from: { slope: number; bank: number },
+    from: { slope: number; bank: number; rot?: number },
     to: { slope: number; bank: number },
     opts: CatalogOptions = { steep: true },
 ): TrackSegmentInfo[] | null {
     if (from.slope === to.slope && from.bank === to.bank) return [];
-    const pieces = straightPieces(table, ride, opts);
+    // En diagonale, transitions diagonales (diagFlatToUp25…) : la pose `from` porte rot.
+    const pieces = straightPieces(table, ride, opts, isDiagonal(from));
     const key = (s: { slope: number; bank: number }) => `${s.slope}|${s.bank}`;
     const prev = new Map<string, { k: string; seg: TrackSegmentInfo } | null>([[key(from), null]]);
     let frontier = [from];
@@ -480,9 +610,9 @@ export function slopeRun(
     ride: RideTrackInfo,
     fromSlope: number,
     dz: number,
-    opts: { steep: boolean; chain: boolean },
+    opts: { steep: boolean; chain: boolean; diag?: boolean },
 ): TrackSegmentInfo[] | null {
-    const pieces = straightPieces(table, ride, { steep: opts.steep, chainedClimbsOnly: opts.chain }).filter(
+    const pieces = straightPieces(table, ride, { steep: opts.steep, chainedClimbsOnly: opts.chain }, !!opts.diag).filter(
         (s) => s.beginBank === 0 && s.endBank === 0 && (dz >= 0 ? s.endZ >= s.beginZ : s.endZ <= s.beginZ),
     );
     const key = (slope: number, z: number) => `${slope}|${z}`;
@@ -568,6 +698,8 @@ export type Macro =
           size?: "small" | "medium" | "large";
           banked?: boolean;
           quarters?: number;
+          /** Huitièmes de tour (size large) : 1 = entrer en diagonale ou en sortir. */
+          eighths?: number;
           slope?: "flat" | "up" | "down" | "steep_up" | "steep_down";
       }
     | { op: "helix"; dir: TurnSide; quarters: number; down?: boolean; size?: "small" | "large" }
@@ -597,8 +729,12 @@ interface PieceRequest {
 
 const TURN_SLOPE = { flat: PITCH.flat, up: PITCH.up25, down: PITCH.down25, steep_up: PITCH.up60, steep_down: PITCH.down60 } as const;
 
-/** Pièces d'un quart de tour (1 pièce, ou 2 pour size 'large' : huitième vers la diagonale puis retour à l'orthogonale). */
-function findTurn(table: SegmentTable, ride: RideTrackInfo, m: Extract<Macro, { op: "turn" }>): TrackSegmentInfo[] | null {
+/**
+ * Pièces d'un virage. small/medium : un quart de tour par pièce, depuis l'orthogonale seulement. large : huitièmes de
+ * tour qui alternent selon la pose (orthogonale → leftEighthToDiag, diagonale → leftEighthToOrthogonal) ; `eighths`
+ * impair laisse le train en diagonale, où hill/climb/drop/straight/brakes prennent les pièces diag*.
+ */
+function findTurn(table: SegmentTable, ride: RideTrackInfo, m: Extract<Macro, { op: "turn" }>, diag: boolean): TrackSegmentInfo[] | null {
     const slope = TURN_SLOPE[m.slope ?? "flat"];
     const steep = slope === PITCH.up60 || slope === PITCH.down60;
     // Les virages raides (1 tuile, 60°) n'existent pas inclinés.
@@ -606,20 +742,27 @@ function findTurn(table: SegmentTable, ride: RideTrackInfo, m: Extract<Macro, { 
     const same = (s: TrackSegmentInfo) =>
         pieceAllowed(ride, s) && !s.flags?.isHelix && s.turnDirection === m.dir && s.beginSlope === slope && s.endSlope === slope && s.beginBank === bank && s.endBank === bank;
     const quarterEnd = m.dir === "left" ? 3 : 1;
+    if (diag && (steep || (m.size !== "large" && !m.eighths))) return null;
     if (steep) {
         const s = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === quarterEnd);
         return s ? [s] : null;
     }
-    if (m.size === "large") {
+    if (m.size === "large" || m.eighths) {
         // leftEighthToDiag (0 → 7) + leftEighthToOrthogonal (4 → 0) ; rightEighthToDiag (0 → 4) + rightEighthToOrthogonal (4 → 1).
         const toDiag = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === (m.dir === "left" ? 7 : 4));
         const toOrth = table.all().find((s) => same(s) && s.beginDirection === 4 && s.endDirection === (m.dir === "left" ? 0 : 1));
-        return toDiag && toOrth ? [toDiag, toOrth] : null;
+        if (!toDiag || !toOrth) return null;
+        const out: TrackSegmentInfo[] = [];
+        for (let i = 0, d = diag; i < (m.eighths ?? 2 * (m.quarters ?? 1)); i++, d = !d) out.push(d ? toOrth : toDiag);
+        return out;
     }
     const span = m.size === "small" ? 32 : 64;
     const s = table.all().find((s) => same(s) && s.beginDirection === 0 && s.endDirection === quarterEnd && Math.abs(s.endX) === span);
-    return s ? [s] : null;
+    return s ? Array(m.quarters ?? 1).fill(s) : null;
 }
+
+/** Macros sans pièce diagonale dans le jeu : il faut d'abord revenir à l'orthogonale. */
+const ORTHOGONAL_ONLY: ReadonlySet<Macro["op"]> = new Set(["launch", "helix", "s_bend", "loop", "inversion", "vertical_drop", "dive", "quarter_loop", "photo"]);
 
 /**
  * Suites de pièces candidates pour une inversion complète (entrée et sortie non inversées), par ordre de préférence.
@@ -695,6 +838,8 @@ export function exitProblem(
             const el = pieceElements(p, table.require(p.type));
             const hit = o.conflict(el);
             if (hit) why = `(${hit.x},${hit.y}) niveau ${hit.z / 16} : piste du circuit`;
+            const mix: TrackBlock | null = why ? null : groundMix(env, el);
+            if (mix) why = `(${mix.x},${mix.y}) niveau ${mix.z / 16} : ${GROUND_MIX}`;
             for (const e of el) {
                 if (why) break;
                 const cause = e.z < zMin ? "trop bas" : (blockProblem(env, e) ?? (bounds ? boundsProblem(bounds, e) : null));
@@ -738,6 +883,8 @@ export function leadInProblem(
             let why: string | null = null;
             const hit = occ.conflict(el);
             if (hit) why = `(${hit.x},${hit.y}) niveau ${hit.z / 16} : piste du circuit`;
+            const mix: TrackBlock | null = why ? null : groundMix(env, el);
+            if (mix) why = `(${mix.x},${mix.y}) niveau ${mix.z / 16} : ${GROUND_MIX}`;
             for (const e of el) {
                 if (why) break;
                 const cause = e.z < zMin ? "trop bas" : (blockProblem(env, e) ?? (bounds ? boundsProblem(bounds, e) : null));
@@ -796,9 +943,11 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
         const t = findTransition(table, ride, pose, { slope: PITCH.flat, bank: ROLL.none });
         return t ? t.map((seg) => ({ seg })) : "impossible de revenir à plat depuis l'état courant";
     };
+    const diag = isDiagonal(pose);
+    if (diag && ORTHOGONAL_ONLY.has(m.op)) return `${m.op} impossible en diagonale : reviens d'abord à l'orthogonale (turn size large, eighths 1)`;
     switch (m.op) {
         case "straight":
-            return many(Array(m.length).fill("flat"));
+            return many(Array(m.length).fill(diagName("flat", diag)));
         case "level":
             return level();
         case "lift":
@@ -810,7 +959,7 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
             // Lift : raide (60°) si le type le permet, sauf steep: false (lift 25° classique, 1 niveau par tuile).
             const steep = m.op === "lift" ? (m.steep ?? ride.supportsSteepLift) && ride.supportsSteepLift : !!m.steep;
             if (m.op === "lift" && m.steep && !ride.supportsSteepLift) return `${ride.name} n'a pas de chaîne raide (60°) : lift sans steep`;
-            const run = slopeRun(table, ride, PITCH.flat, dz, { steep, chain: m.op === "lift" });
+            const run = slopeRun(table, ride, PITCH.flat, dz, { steep, chain: m.op === "lift", diag });
             if (!run) return `aucune suite de pièces droites ne fait ${m.op === "drop" ? "descendre" : "monter"} de ${m.height} niveau(x) exactement`;
             return [...lv, ...run.map((seg) => ({ seg, chain: m.op === "lift" && climbs(seg) }))];
         }
@@ -828,25 +977,26 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
         case "booster": {
             const lv = level();
             if (typeof lv === "string") return lv;
-            const run = many(Array(m.length).fill("booster"), { brakeSpeed: m.speed ?? 20 });
+            const run = many(Array(m.length).fill(diagName("booster", diag)), { brakeSpeed: m.speed ?? 20 });
             return typeof run === "string" ? run : [...lv, ...run];
         }
         case "hill": {
             // Colline (camelback) : montée sur l'élan puis descente de la même hauteur, sans palier au sommet.
             const lv = level();
             if (typeof lv === "string") return lv;
-            const up = slopeRun(table, ride, PITCH.flat, m.height * 16, { steep: !!m.steep, chain: false });
-            const down = slopeRun(table, ride, PITCH.flat, -m.height * 16, { steep: !!m.steep, chain: false });
+            const up = slopeRun(table, ride, PITCH.flat, m.height * 16, { steep: !!m.steep, chain: false, diag });
+            const down = slopeRun(table, ride, PITCH.flat, -m.height * 16, { steep: !!m.steep, chain: false, diag });
             if (!up || !down) return `aucune colline de ${m.height} niveau(x) exactement`;
             return [...lv, ...up.map((seg) => ({ seg })), ...down.map((seg) => ({ seg }))];
         }
         case "turn": {
-            const segs = findTurn(table, ride, m);
+            const segs = findTurn(table, ride, m, diag);
             if (!segs) {
                 const steep = m.slope === "steep_up" || m.slope === "steep_down";
+                if (diag) return "en diagonale, seul un virage size 'large' (huitièmes) est possible : turn { size: 'large', eighths: 1 } pour revenir à l'orthogonale";
                 return `aucun virage ${m.dir} ${steep ? "1 tuile" : m.size ?? "medium"}${m.banked && !steep ? " incliné" : ""}${m.slope && m.slope !== "flat" ? ` en ${m.slope}` : ""} pour ${ride.name}`;
             }
-            return Array.from({ length: m.quarters ?? 1 }, () => segs.map((seg) => ({ seg }))).flat();
+            return segs.map((seg) => ({ seg }));
         }
         case "inversion": {
             // Sans taille : la plus grande disponible (large, puis medium, puis small).
@@ -927,9 +1077,9 @@ function expandMacro(table: SegmentTable, ride: RideTrackInfo, m: Macro, pose: T
         case "loop":
             return many([m.dir === "left" ? "leftVerticalLoop" : "rightVerticalLoop"]);
         case "brakes":
-            return many(Array(m.length).fill("brakes"), { brakeSpeed: m.speed ?? 10 });
+            return many(Array(m.length).fill(diagName("brakes", diag)), { brakeSpeed: m.speed ?? 10 });
         case "block_brakes":
-            return many(["blockBrakes"], { brakeSpeed: 10 });
+            return many([diagName("blockBrakes", diag)], { brakeSpeed: 10 });
         case "photo":
             return many(["onRidePhoto"]);
         case "piece": {
@@ -1257,6 +1407,63 @@ export interface ClosureOptions {
     bounds?: TrackBounds;
     /** Montées à chaîne (défaut). false : montées sur l'élan, à vérifier par la simulation (un seul lift). */
     chainClimbs?: boolean;
+    /** Coût restant jusqu'à `goal` calculé à rebours (`costToGoal`, même goal) : heuristique exacte près de l'arrivée. */
+    costToGo?: CostToGoal;
+}
+
+/**
+ * Coût restant jusqu'à une pose, par Dijkstra à rebours depuis elle (pieceEndingAt) avec le relief et la piste déjà
+ * posée : `cost` pour chaque pose atteinte, `frontier` = coût sous lequel toutes les poses sont connues (Infinity si
+ * l'exploration est complète : une pose absente ne peut pas rejoindre l'arrivée). Contrôles de planClosure, relâchés
+ * (sans plafond de hauteur ni conflit avec les pièces du chemin lui-même) : une borne inférieure.
+ */
+export interface CostToGoal {
+    cost: Map<string, number>;
+    frontier: number;
+}
+
+export function costToGoal(
+    catalog: TrackSegmentInfo[],
+    goal: TrackPose,
+    occupancy: Occupancy,
+    env: TrackEnv,
+    opts: { zMin?: number; bounds?: TrackBounds; maxNodes?: number } = {},
+): CostToGoal {
+    const zMin = opts.zMin ?? 16;
+    const maxNodes = opts.maxNodes ?? 20_000;
+    const byEnd = new Map<string, TrackSegmentInfo[]>();
+    for (const s of catalog) {
+        const k = `${s.endSlope}|${s.endBank}|${s.endDirection & 4}`;
+        const list = byEnd.get(k) ?? [];
+        list.push(s);
+        byEnd.set(k, list);
+    }
+    const cost = new Map<string, number>([[poseKey(goal), 0]]);
+    const heap = new MinHeap();
+    heap.push({ pose: goal, f: 0 } as Node);
+    let nodes = 0;
+    while (heap.size) {
+        if (nodes >= maxNodes) return { cost, frontier: (heap.pop() as Node).f };
+        const { pose, f } = heap.pop() as Node;
+        if (f > (cost.get(poseKey(pose)) ?? Infinity)) continue;
+        nodes++;
+        for (const seg of byEnd.get(`${pose.slope}|${pose.bank}|${pose.rot & 4}`) ?? []) {
+            const piece = pieceEndingAt(pose, seg);
+            if (!piece) continue;
+            const before = beginPose(piece, seg);
+            if (before.z < zMin) continue;
+            const elements = pieceElements(piece, seg);
+            if (elements.some((e) => e.z < zMin - 64 || blockProblem(env, e) !== null) || groundMix(env, elements)) continue;
+            if (opts.bounds && elements.some((e) => boundsProblem(opts.bounds!, e) !== null)) continue;
+            if (occupancy.conflict(elements)) continue;
+            const g = f + Math.max(0.5, pieceCost(seg) - STACK_BONUS);
+            const k = poseKey(before);
+            if ((cost.get(k) ?? Infinity) <= g) continue;
+            cost.set(k, g);
+            heap.push({ pose: before, f: g } as Node);
+        }
+    }
+    return { cost, frontier: Infinity };
 }
 
 /** Bonus de coût d'une pièce qui passe au-dessus ou au-dessous du circuit existant (compacité, COASTER_SPACE 4.2). */
@@ -1326,15 +1533,83 @@ function pieceCost(seg: TrackSegmentInfo): number {
     // Virages non inclinés : G latéraux élevés à vitesse de croisière (rapport de coaster_test).
     if (seg.turnDirection !== "straight" && seg.beginBank === 0 && seg.endBank === 0) c += 1.5;
     if (seg.turnDirection !== "straight" && Math.abs(seg.endX) <= 32 && Math.abs(seg.endY) <= 32) c += 0.8;
-    // S-bends (décalage latéral sans changer de direction) : laids et brusques ; en dernier recours seulement.
-    if (seg.endY !== 0 && seg.endDirection === seg.beginDirection) c += 3;
+    // S-bends (décalage latéral sans changer de direction) : laids et brusques ; en dernier recours seulement. Les pièces
+    // diagonales droites (endY ≠ 0 elles aussi) n'en sont pas.
+    if (isSBend(seg)) c += 3;
     return c;
 }
 
-function heuristic(p: TrackPose, goal: TrackPose): number {
+/** Demi-côté (tuiles) de la table de virage (`turnCost`) ; au-delà, la distance de Manhattan seule. */
+const TURN_RADIUS = 16;
+const TURN_SIDE = 2 * TURN_RADIUS + 1;
+/** Tables par contenu du catalogue (les appelants en refont souvent une copie filtrée) : clé = types des pièces. */
+const turnTables = new Map<string, Map<number, Float64Array>>();
+const catalogKeys = new WeakMap<TrackSegmentInfo[], string>();
+
+/**
+ * Coût minimal (pieceCost moins STACK_BONUS par pièce) pour aller d'une pose à une autre avec les pièces du catalogue,
+ * sans obstacle ni relief : projection à plat (pente, inclinaison et hauteur ignorées), donc une borne inférieure. Une
+ * table par catalogue et par direction de départ (Dijkstra, calculée à la première demande). Sans elle, l'heuristique de
+ * planClosure prenait une pose à 1 tuile de l'arrivée mais tournée à l'envers pour presque arrivée (2,5 au lieu d'un
+ * demi-tour de ~10) : la fermeture de Timber Loop (10 octobre 2026, arrivée à 15 niveaux du sol) épuisait ses 4000
+ * expansions autour de la station, quand 10 pièces suffisaient.
+ */
+function turnCost(catalog: TrackSegmentInfo[], from: TrackPose, to: TrackPose): number {
+    const dx = to.x - from.x;
+    const dy = to.y - from.y;
+    if (Math.abs(dx) > TURN_RADIUS || Math.abs(dy) > TURN_RADIUS) return 0;
+    let key = catalogKeys.get(catalog);
+    if (key === undefined) catalogKeys.set(catalog, (key = catalog.map((s) => s.type).join(",")));
+    let tables = turnTables.get(key);
+    if (!tables) turnTables.set(key, (tables = new Map()));
+    const r0 = from.rot & 7;
+    let table = tables.get(r0);
+    if (!table) tables.set(r0, (table = turnTable(catalog, r0)));
+    const c = table[((dx + TURN_RADIUS) * TURN_SIDE + dy + TURN_RADIUS) * 8 + (to.rot & 7)];
+    return Number.isFinite(c) ? c : 0;
+}
+
+function turnTable(catalog: TrackSegmentInfo[], r0: number): Float64Array {
+    const cost = new Float64Array(TURN_SIDE * TURN_SIDE * 8).fill(Infinity);
+    const idx = (x: number, y: number, rot: number) => ((x + TURN_RADIUS) * TURN_SIDE + y + TURN_RADIUS) * 8 + (rot & 7);
+    // Déplacements à plat distincts par direction de départ (les variantes en pente ou inclinées ont la même empreinte).
+    const moves: { dx: number; dy: number; rot: number; c: number }[][] = [];
+    for (let rot = 0; rot < 8; rot++) {
+        const best = new Map<string, { dx: number; dy: number; rot: number; c: number }>();
+        const from: TrackPose = { x: 0, y: 0, z: 0, rot, slope: 0, bank: 0 };
+        for (const seg of catalog) {
+            if ((seg.beginDirection & 4) !== (rot & 4)) continue;
+            const end = endPose(originAt(from, seg), seg);
+            const c = Math.max(0.5, pieceCost(seg) - STACK_BONUS);
+            const k = `${end.x},${end.y},${end.rot & 7}`;
+            const cur = best.get(k);
+            if (!cur || cur.c > c) best.set(k, { dx: end.x, dy: end.y, rot: end.rot & 7, c });
+        }
+        moves.push([...best.values()]);
+    }
+    const heap = new MinHeap();
+    cost[idx(0, 0, r0)] = 0;
+    heap.push({ pose: { x: 0, y: 0, z: 0, rot: r0, slope: 0, bank: 0 }, f: 0 } as Node);
+    while (heap.size) {
+        const { pose, f } = heap.pop() as Node;
+        if (f > cost[idx(pose.x, pose.y, pose.rot)]) continue;
+        for (const m of moves[pose.rot & 7]) {
+            const x = pose.x + m.dx;
+            const y = pose.y + m.dy;
+            if (Math.abs(x) > TURN_RADIUS || Math.abs(y) > TURN_RADIUS) continue;
+            const k = idx(x, y, m.rot);
+            if (cost[k] <= f + m.c) continue;
+            cost[k] = f + m.c;
+            heap.push({ pose: { x, y, z: 0, rot: m.rot, slope: 0, bank: 0 }, f: f + m.c } as Node);
+        }
+    }
+    return cost;
+}
+
+function heuristic(p: TrackPose, goal: TrackPose, catalog: TrackSegmentInfo[]): number {
     const man = Math.abs(p.x - goal.x) + Math.abs(p.y - goal.y);
     const dz = Math.abs(p.z - goal.z);
-    let h = Math.max(man, dz / 64);
+    let h = Math.max(man, dz / 64, turnCost(catalog, p, goal));
     if ((p.rot & 3) !== (goal.rot & 3)) h += 1.5;
     if (p.slope !== goal.slope || p.bank !== goal.bank) h += 1;
     return h;
@@ -1370,9 +1645,18 @@ export function planClosure(
         byState.set(k, list);
     }
     const goalKey = poseKey(goal);
+    const toGo = opts.costToGo;
+    // Coût restant connu (exact près de l'arrivée, au moins la frontière ailleurs), sinon l'heuristique géométrique.
+    const h = (p: TrackPose): number => {
+        const geo = heuristic(p, goal, catalog);
+        if (!toGo) return geo;
+        const known = toGo.cost.get(poseKey(p));
+        return known !== undefined ? known : Math.max(geo, toGo.frontier);
+    };
+    if (toGo && !Number.isFinite(h(start))) return null;
     const best = new Map<string, number>();
     const heap = new MinHeap();
-    heap.push({ pose: start, g: 0, f: w * heuristic(start, goal), piece: null, seg: null, elements: [], parent: null, depth: 0 });
+    heap.push({ pose: start, g: 0, f: w * h(start), piece: null, seg: null, elements: [], parent: null, depth: 0 });
     best.set(poseKey(start), 0);
     let expansions = 0;
     while (heap.size && expansions < maxExp) {
@@ -1396,7 +1680,7 @@ export function planClosure(
             const end = endPose(piece, seg);
             if (end.z < zMin || end.z > zMax) continue;
             const elements = pieceElements(piece, seg);
-            if (elements.some((e) => e.z < zMin - 64 || blockProblem(env, e) !== null)) continue;
+            if (elements.some((e) => e.z < zMin - 64 || blockProblem(env, e) !== null) || groundMix(env, elements)) continue;
             if (opts.bounds && elements.some((e) => boundsProblem(opts.bounds!, e) !== null)) continue;
             if (occupancy.conflict(elements)) continue;
             // À coût égal, préférer les pièces qui s'empilent avec le circuit existant plutôt qu'à côté.
@@ -1405,7 +1689,9 @@ export function planClosure(
             const ek = poseKey(end);
             if ((best.get(ek) ?? Infinity) <= g) continue;
             best.set(ek, g);
-            heap.push({ pose: end, g, f: g + w * heuristic(end, goal), piece, seg, elements, parent: node, depth: node.depth + 1 });
+            const hEnd = h(end);
+            if (!Number.isFinite(hEnd)) continue;
+            heap.push({ pose: end, g, f: g + w * hEnd, piece, seg, elements, parent: node, depth: node.depth + 1 });
         }
     }
     return null;

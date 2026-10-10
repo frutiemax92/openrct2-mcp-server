@@ -15,7 +15,7 @@ describe.skipIf(!existsSync(FRIGHTMARE))("cibles de référence", () => {
     const ref = referenceTarget("Frightmare", table, l.pieces);
 
     it("Frightmare : longueur, densité, empilement, lift et trains", () => {
-        expect(ref).toMatchObject({ pieces: 112, lengthTiles: 205, density: 0.5, stackedTiles: 80, liftShared: 11, maxTrains: 3 });
+        expect(ref).toMatchObject({ pieces: 112, lengthTiles: 205, footprintArea: 212, holes: 29, density: 0.97, stackedTiles: 80, liftShared: 11, maxTrains: 3 });
         expect(targetLevers(ref, ref)).toEqual([]);
         const closed = checkTarget(ref, layoutStats(table, l.pieces), spaceProfile(table, l.pieces, { closed: true }), true);
         expect(closed.blocking).toEqual([]);
@@ -36,11 +36,26 @@ describe.skipIf(!existsSync(FRIGHTMARE))("cibles de référence", () => {
         const closed = checkTarget(ref, layout, space, true);
         expect(closed.blocking.some((b) => /trop court/.test(b))).toBe(true);
         expect(closed.blocking.some((b) => /train/.test(b))).toBe(true);
-        expect(closed.warnings.some((w) => /densité|empilées/.test(w))).toBe(true);
-        // Compacité bloquante : un circuit étalé ne ferme plus, même assez long.
-        expect(closed.blocking.some((b) => /densité/.test(b))).toBe(true);
-        expect(closed.blocking.some((b) => /empilées/.test(b))).toBe(true);
-        expect(closed.blocking.some((b) => /dessous du lift/.test(b))).toBe(true);
+        // Un U ouvert n'enferme rien : son contour est petit, et l'empilement ou le dessous du lift ne bloquent plus.
+        expect(closed.blocking.some((b) => /contour|densité|empilées|dessous du lift/.test(b))).toBe(false);
+    });
+
+    it("compacité : un anneau autour d'un grand trou est refusé sur son contour, pas sur l'empilement", () => {
+        const ring = compileMacros(table, twister, start, [
+            { op: "straight", length: 20 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 14 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 20 },
+            { op: "turn", dir: "right", size: "medium" },
+            { op: "straight", length: 14 },
+            { op: "turn", dir: "right", size: "medium" },
+        ]);
+        const space = spaceProfile(table, ring.pieces, { closed: true });
+        expect(space.outline.holes).toBeGreaterThan(space.trackTiles);
+        const closed = checkTarget(ref, layoutStats(table, ring.pieces), space, true);
+        expect(closed.blocking.some((b) => /^contour \d+ tuiles/.test(b))).toBe(true);
+        expect(closed.blocking.some((b) => /empilées|dessous du lift/.test(b))).toBe(false);
     });
     it("« Frightmare, mais plus haut, plus rapide, plus long, à 4 trains » : Frightmare lui-même ne ferme plus", () => {
         const base = { ...ref, topSpeedKmh: 90 };
@@ -123,16 +138,17 @@ describe.skipIf(!existsSync(BLACK_WIDOW))("emprise d'une référence modifiée",
     const mods = { taller: 3, faster: 8, longer: 25, trains: 3 };
 
     it("« Black Widow Loop » (Haiku) : lift 23 et 218 tuiles sur 37×23 refusés à 1,3 × 1,25 × l'emprise ; tiennent maintenant", () => {
-        expect(ref).toMatchObject({ footprintArea: 322, footprintSides: [23, 14], density: 0.52 });
+        // Emprise = contour (169 tuiles de piste + 24 de trous) ; le rectangle englobant 23×14 ne sert plus qu'aux côtés.
+        expect(ref).toMatchObject({ footprintArea: 193, holes: 24, footprintSides: [23, 14], density: 0.88 });
         const mod = applyMods(ref, mods);
         // Estimation a priori : chute +3,3 niveaux (v² ∝ hauteur), grand côté plus long, virages plus larges.
         expect(mod.footprintSides![0]).toBeGreaterThan(26);
-        expect(mod.footprintArea * FOOTPRINT_MAX).toBeGreaterThan(Math.round(322 * 1.25 * FOOTPRINT_MAX));
-        // Chute réellement posée : 23 niveaux (17 + 6) pour atteindre 95 km/h.
+        expect(mod.footprintArea * FOOTPRINT_MAX).toBeGreaterThan(Math.round(193 * 1.25 * FOOTPRINT_MAX));
+        // Chute réellement posée : 23 niveaux (17 + 6) pour atteindre 95 km/h : le contour permis grandit encore.
         const built = { complete: true, liftEnd: 0, end: 0, topRun: 0, height: 23, steep: 10 };
         const a = allowedSpace(mod, built);
-        expect(a.area * FOOTPRINT_MAX).toBeGreaterThanOrEqual(37 * 23);
-        expect(a.density * 0.75).toBeLessThanOrEqual(218 / (37 * 23));
+        expect(a.area).toBeGreaterThan(mod.footprintArea);
+        expect(a.density).toBeLessThan(mod.density);
         // Plafonné : un lift démesuré n'ouvre pas l'emprise sans limite.
         expect(allowedSpace(mod, { ...built, height: 60 }).area).toBe(allowedSpace(mod, { ...built, height: 17 + 2 * 3.3 + 3 }).area);
         // Sans plus haut ni plus rapide, la chute posée ne change rien.

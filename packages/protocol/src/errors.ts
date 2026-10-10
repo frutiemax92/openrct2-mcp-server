@@ -78,7 +78,7 @@ export function gameErrorToBridgeError(action: string, r: GameErrorInfo, extra?:
             return { code: "OBSTRUCTED", message, details, hint: "Quelque chose occupe déjà la place : inspect_tile, puis scenery_remove/path_remove, ou choisis une autre tuile." };
         case GAME_STATUS.tooLow:
         case GAME_STATUS.tooHigh:
-            return { code: "BAD_SLOPE", message, details, hint: "Hauteur hors limites : ajuste le terrain (terrain_flatten) ou le niveau demandé." };
+            return { code: "BAD_SLOPE", message, details, hint: "Hauteur hors limites : ajuste le niveau demandé ou choisis un autre emplacement (le relief ne se modifie qu'avec l'accord de l'utilisateur)." };
         case GAME_STATUS.gamePaused:
             return { code: "GAME_ACTION_FAILED", message, details, hint: "Construction impossible en pause : reprends le temps (session_set_paused) ou passe en mode sandbox (buildInPauseMode)." };
         case GAME_STATUS.notInEditorMode:
