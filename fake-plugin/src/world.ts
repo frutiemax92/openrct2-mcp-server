@@ -46,6 +46,7 @@ export interface FakeSmall {
     quadrant: number;
     direction: number;
     l: number;
+    colours?: [number?, number?, number?];
 }
 
 export interface FakeTile {
@@ -53,6 +54,8 @@ export interface FakeTile {
     s: number;
     w: number;
     t: number;
+    /** Index de l'objet terrain_edge (absent : 0). */
+    te?: number;
     o: number;
     paths: FakePath[];
     tracks: FakeTrack[];
@@ -134,6 +137,8 @@ export const DEFAULT_OBJECTS: { loaded: FakeObject[]; installedOnly: FakeObject[
         { identifier: "rct2.ride.chpsh", name: "Chips Shop", type: "ride", extra: { rideType: [28] } },
         { identifier: "rct2.scenery_small.tmp", name: "Palm Tree", type: "small_scenery", extra: { height: 64, price: 12, flags: TREE_FLAGS } },
         { identifier: "rct2.ride.rct1.wooden", name: "Wooden Roller Coaster", type: "ride", extra: { rideType: [52] } },
+        { identifier: "rct2.terrain_surface.rock", name: "Rock", type: "terrain_surface" },
+        { identifier: "rct2.terrain_edge.wood_red", name: "Red Wood", type: "terrain_edge" },
     ],
 };
 
@@ -197,12 +202,17 @@ export class World {
         return i === null ? null : (this.loaded.get(type) ?? [])[i];
     }
 
-    load(identifier: string): { ok: boolean; index: number | null; type: string | null; error?: string } {
+    /** Plafond d'objets chargés par type (tests de la limite ; le jeu : ObjectLimits.h). */
+    objectLimits: Record<string, number> = {};
+
+    load(identifier: string): { ok: boolean; index: number | null; type: string | null; error?: string; reason?: "limit" } {
         const inst = this.installed.find((o) => o.identifier === identifier);
         if (!inst) return { ok: false, index: null, type: null, error: "objet non installé" };
         const list = this.loaded.get(inst.type) ?? [];
         const existing = list.findIndex((o) => o.identifier === identifier);
         if (existing >= 0) return { ok: true, index: existing, type: inst.type };
+        const max = this.objectLimits[inst.type];
+        if (max !== undefined && list.length >= max) return { ok: false, index: null, type: inst.type, error: "limite d'objets atteinte", reason: "limit" };
         list.push(inst);
         this.loaded.set(inst.type, list);
         return { ok: true, index: list.length - 1, type: inst.type };

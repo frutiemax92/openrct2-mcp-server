@@ -41,7 +41,7 @@ export function mergeBulk(parts: BulkResult[]): BulkResult {
     };
 }
 
-export function chunks<T>(items: T[], size = LIMITS.maxOpsPerRequest): T[][] {
+export function chunks<T>(items: T[], size: number = LIMITS.maxOpsPerRequest): T[][] {
     const out: T[][] = [];
     for (let i = 0; i < items.length; i += size) out.push(items.slice(i, i + size));
     return out;

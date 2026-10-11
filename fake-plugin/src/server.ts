@@ -1,7 +1,7 @@
 // Faux plugin : même protocole NDJSON que claude-bridge, sur un monde simulé.
 
 import { createServer, type Server, type Socket } from "node:net";
-import { PROTOCOL_VERSION, type BridgeError, type MapChangedEvent } from "@openrct2-claude/protocol";
+import { PROTOCOL_VERSION, type BridgeError, type MagicFillRequest, type MapChangedEvent, type StyleRecord } from "@openrct2-claude/protocol";
 import { FakeError, FakeGame } from "./handlers.js";
 import type { World } from "./world.js";
 
@@ -48,6 +48,20 @@ export class FakePlugin {
     dropClient(): void {
         this.client?.destroy();
         this.client = null;
+    }
+
+    /** Simule « Save Style » ou un trait du Magic Fill Tool en jeu : l'élément attend dans la boîte d'envoi. */
+    pushInbox(items: { styles?: StyleRecord[]; fills?: MagicFillRequest[] }): void {
+        this.game.inboxStyles.push(...(items.styles ?? []));
+        this.game.inboxFills.push(...(items.fills ?? []));
+        this.send(this.client, { v: PROTOCOL_VERSION, event: "inbox", data: { styles: this.game.inboxStyles.length, fills: this.game.inboxFills.length } });
+    }
+
+    /** Simule le bouton « Clear all stored styles » : styles en attente oubliés, base vidée à la prochaine prise. */
+    pushClearStyles(): void {
+        this.game.inboxStyles = [];
+        this.game.inboxClear = true;
+        this.send(this.client, { v: PROTOCOL_VERSION, event: "inbox", data: { styles: 0, fills: this.game.inboxFills.length, clearStyles: true } });
     }
 
     emitMapChanged(): void {

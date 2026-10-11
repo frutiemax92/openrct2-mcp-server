@@ -16,6 +16,8 @@ import { hasPark, helloResult } from "./handlers/session";
 import { Connection, Server } from "./net";
 import { invalidateObjects } from "./objects";
 import { enqueue, flush, pump, type Responder } from "./queue";
+import * as inbox from "./styles/inbox";
+import { registerStyleTools } from "./ui/windows";
 import { log, toBridgeError } from "./util";
 
 declare const __BRIDGE_DEFAULT_TOKEN__: string;
@@ -78,6 +80,8 @@ function onHello(conn: Connection, msg: RequestMessage): void {
     server?.promote(conn);
     conn.sendOk(msg.id, helloResult());
     log(`client authentifié (${params.clientVersion ?? "?"})`);
+    // Styles et demandes Magic Fill restés en attente : le serveur vient les prendre (inbox.take).
+    inbox.refresh();
 }
 
 function onRequest(conn: Connection, msg: RequestMessage): void {
@@ -110,6 +114,7 @@ function onRequest(conn: Connection, msg: RequestMessage): void {
 function onClose(conn: Connection): void {
     flush("INTERNAL", "Connexion fermée.", responderFor(conn));
     log("client déconnecté");
+    inbox.refresh();
 }
 
 /** Appelé à chaque frame (40 Hz), y compris en pause : `interval.tick` ne tourne pas en pause (ADR 0002). */
@@ -161,6 +166,11 @@ function main(): void {
     context.setInterval(frame, 0);
     context.subscribe("map.change", onMapChange);
     context.subscribe("map.changed", onMapChanged);
+    inbox.setConnectedProbe(() => !!server?.active && !server.active.closed && server.active.authed);
+    inbox.setNotifier((data) => {
+        if (data.styles || data.fills || data.clearStyles) server?.active?.sendEvent("inbox", data);
+    });
+    registerStyleTools();
     log(`v${PLUGIN_VERSION} prêt (API ${context.apiVersion}, mode réseau ${network.mode})`);
 }
 

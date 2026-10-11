@@ -43,7 +43,7 @@ export function registerBuildTools(server: McpServer, ctx: ToolContext): void {
             input: { ...zRectShape, level: z.union([z.number().int().min(MIN_LEVEL).max(MAX_LEVEL), z.literal("auto")]).default("auto"), dryRun: zDryRun },
         },
         async ({ x1, y1, x2, y2, level, dryRun }) => {
-            requireLandscape(ctx, "terrain_flatten", dryRun);
+            requireLandscape(ctx, "terrain_flatten", dryRun, normalizeRect({ x1, y1, x2, y2 }));
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             if (rectArea(rect) > MAX_FLATTEN_TILES) toolError("INVALID_PARAMS", `Zone trop grande (${rectArea(rect)} tuiles, max ${MAX_FLATTEN_TILES}).`);
             const reg = await ctx.cache.region(rect);
@@ -119,7 +119,7 @@ export function registerBuildTools(server: McpServer, ctx: ToolContext): void {
         },
         async ({ x1, y1, x2, y2, surface, edge, dryRun }) => {
             if (!surface && !edge) toolError("INVALID_PARAMS", "Indique surface et/ou edge.");
-            requireLandscape(ctx, "terrain_set_surface", dryRun);
+            requireLandscape(ctx, "terrain_set_surface", dryRun, normalizeRect({ x1, y1, x2, y2 }));
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             const reg = await ctx.cache.region(rect);
             const r = await ctx.bridge.call("terrain.set_surface", { ...rect, surfaceObject: surface ?? null, edgeObject: edge ?? null, dryRun });

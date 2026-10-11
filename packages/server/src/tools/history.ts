@@ -23,6 +23,52 @@ function failedCount(r: unknown): number {
     return 0;
 }
 
+/** Sauvegarde le parc (save/claude-<name>.park) et l'état du serveur (journal, zones) ; écrase un checkpoint du même nom. */
+export async function saveCheckpoint(ctx: ToolContext, name: string): Promise<{ file: string; summary: Record<string, unknown> }> {
+    const file = `${PREFIX}${name}`;
+    const r = await ctx.bridge.call("checkpoint.save", { name: file });
+    const full = join(paths.saves(ctx.config), r.filename);
+    const start = Date.now();
+    while (!existsSync(full) && Date.now() - start < 5000) await new Promise((res) => setTimeout(res, 100));
+    if (!existsSync(full)) toolError("INTERNAL", `Sauvegarde introuvable : ${full}.`, { hint: "Vérifie OPENRCT2_USER_DIR." });
+    const overview = await ctx.bridge.call("park.overview", {}).catch(() => null);
+    const summary = overview ? { cash: overview.cash, rating: overview.rating, guests: overview.guests, rides: overview.rides.total } : {};
+    mkdirSync(metaDir(ctx), { recursive: true });
+    writeFileSync(join(metaDir(ctx), `${file}.json`), JSON.stringify({ createdAt: new Date().toISOString(), summary, journal: ctx.journal.toJSON(), zones: ctx.state.zones.toJSON() }));
+    ctx.state.checkpoints.set(name, { file: full, createdAt: new Date().toISOString(), summary });
+    return { file: full, summary };
+}
+
+export function checkpointExists(ctx: ToolContext, name: string): boolean {
+    return existsSync(join(paths.saves(ctx.config), `${PREFIX}${name}.park`));
+}
+
+/** Recharge un checkpoint (load_park) et le journal, les zones du serveur enregistrés avec lui. */
+export async function restoreCheckpoint(ctx: ToolContext, name: string) {
+    const file = `${PREFIX}${name}`;
+    if (!checkpointExists(ctx, name)) toolError("NOT_FOUND", `Checkpoint « ${name} » introuvable.`, { hint: "checkpoint_list pour voir les noms." });
+    const changed = ctx.bridge.waitForEvent("map_changed", 30_000);
+    await ctx.bridge.call("checkpoint.restore", { name: file });
+    try {
+        await changed;
+    } catch {
+        // Le plugin a peut-être été rechargé : on attend la reconnexion.
+        await ctx.bridge.ensureConnected();
+    }
+    ctx.cache.invalidateAll();
+    const metaFile = join(metaDir(ctx), `${file}.json`);
+    if (existsSync(metaFile)) {
+        try {
+            const meta = JSON.parse(readFileSync(metaFile, "utf8")) as { journal: JournalEntry[]; zones?: [string, ZoneType][] };
+            ctx.journal.load(meta.journal ?? []);
+            ctx.state.zones.load(meta.zones);
+        } catch {
+            ctx.journal.clear();
+        }
+    } else ctx.journal.clear();
+    return ctx.bridge.call("session.info", {});
+}
+
 export function registerHistoryTools(server: McpServer, ctx: ToolContext): void {
     defineTool(
         server,
@@ -84,18 +130,8 @@ export function registerHistoryTools(server: McpServer, ctx: ToolContext): void 
             input: { name: NAME },
         },
         async ({ name }) => {
-            const file = `${PREFIX}${name}`;
-            const r = await ctx.bridge.call("checkpoint.save", { name: file });
-            const full = join(paths.saves(ctx.config), r.filename);
-            const start = Date.now();
-            while (!existsSync(full) && Date.now() - start < 5000) await new Promise((res) => setTimeout(res, 100));
-            if (!existsSync(full)) toolError("INTERNAL", `Sauvegarde introuvable : ${full}.`, { hint: "Vérifie OPENRCT2_USER_DIR." });
-            const overview = await ctx.bridge.call("park.overview", {}).catch(() => null);
-            const summary = overview ? { cash: overview.cash, rating: overview.rating, guests: overview.guests, rides: overview.rides.total } : {};
-            mkdirSync(metaDir(ctx), { recursive: true });
-            writeFileSync(join(metaDir(ctx), `${file}.json`), JSON.stringify({ createdAt: new Date().toISOString(), summary, journal: ctx.journal.toJSON(), zones: ctx.state.zones.toJSON() }));
-            ctx.state.checkpoints.set(name, { file: full, createdAt: new Date().toISOString(), summary });
-            return result({ budget: BUDGET.write, response: { summary: `Checkpoint « ${name} » enregistré.`, file: full, park: summary } });
+            const { file, summary } = await saveCheckpoint(ctx, name);
+            return result({ budget: BUDGET.write, response: { summary: `Checkpoint « ${name} » enregistré.`, file, park: summary } });
         },
     );
 
@@ -146,29 +182,7 @@ export function registerHistoryTools(server: McpServer, ctx: ToolContext): void 
             destructive: true,
         },
         async ({ name }) => {
-            const file = `${PREFIX}${name}`;
-            const full = join(paths.saves(ctx.config), `${file}.park`);
-            if (!existsSync(full)) toolError("NOT_FOUND", `Checkpoint « ${name} » introuvable.`, { hint: "checkpoint_list pour voir les noms." });
-            const changed = ctx.bridge.waitForEvent("map_changed", 30_000);
-            await ctx.bridge.call("checkpoint.restore", { name: file });
-            try {
-                await changed;
-            } catch {
-                // Le plugin a peut-être été rechargé : on attend la reconnexion.
-                await ctx.bridge.ensureConnected();
-            }
-            ctx.cache.invalidateAll();
-            const metaFile = join(metaDir(ctx), `${file}.json`);
-            if (existsSync(metaFile)) {
-                try {
-                    const meta = JSON.parse(readFileSync(metaFile, "utf8")) as { journal: JournalEntry[]; zones?: [string, ZoneType][] };
-                    ctx.journal.load(meta.journal ?? []);
-                    ctx.state.zones.load(meta.zones);
-                } catch {
-                    ctx.journal.clear();
-                }
-            } else ctx.journal.clear();
-            const info = await ctx.bridge.call("session.info", {});
+            const info = await restoreCheckpoint(ctx, name);
             return result({ budget: BUDGET.write, response: { summary: `Checkpoint « ${name} » restauré : ${info.park?.name ?? "?"}.`, journalEntries: ctx.journal.length } });
         },
     );

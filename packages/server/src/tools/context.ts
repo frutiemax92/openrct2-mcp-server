@@ -2,7 +2,7 @@
 
 import type { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
-import { BridgeException, type BridgeError, type RegionTile } from "@openrct2-claude/protocol";
+import { BridgeException, type BridgeError, type RegionTile, type TileRect } from "@openrct2-claude/protocol";
 import type { ZodRawShape } from "zod";
 import { z } from "zod";
 import type { BridgeLike } from "../bridge.js";
@@ -25,6 +25,8 @@ export interface ServerState {
     zones: ZoneMap;
     /** Relief modifiable (session_set_landscape) : faux par défaut, vrai seulement à la demande de l'utilisateur (SPEC 9.2). */
     landscapeAllowed: boolean;
+    /** Emprises des demandes Magic Fill ouvertes : peindre une région vaut accord pour y modifier le relief (sans session_set_landscape). */
+    magicFillAreas?: () => TileRect[];
 }
 
 export interface ToolContext {
@@ -61,13 +63,23 @@ export function toolError(code: BridgeError["code"], message: string, extra?: { 
     throw new ToolError({ code, message, ...extra });
 }
 
-/** Refuse d'écrire le relief sans l'accord de l'utilisateur (SPEC 9.2) ; la simulation (dryRun) reste permise. */
-export function requireLandscape(ctx: ToolContext, tool: string, dryRun?: boolean): void {
+/** Rectangle entièrement dans l'emprise d'une demande Magic Fill ouverte. */
+function insideMagicFill(ctx: ToolContext, rect: TileRect): boolean {
+    return (ctx.state.magicFillAreas?.() ?? []).some((a) => rect.x1 >= a.x1 && rect.y1 >= a.y1 && rect.x2 <= a.x2 && rect.y2 <= a.y2);
+}
+
+/**
+ * Refuse d'écrire le relief sans l'accord de l'utilisateur (SPEC 9.2) ; la simulation (dryRun) reste permise, et une
+ * région peinte avec le Magic Fill Tool vaut accord pour son emprise (rect).
+ */
+export function requireLandscape(ctx: ToolContext, tool: string, dryRun?: boolean, rect?: TileRect): void {
     if (ctx.state.landscapeAllowed || dryRun) return;
+    if (rect && insideMagicFill(ctx, rect)) return;
     toolError("NOT_SUPPORTED_IN_MODE", `${tool} modifie le relief, verrouillé par défaut.`, {
         hint:
             "Adapte-toi au terrain (autre site, level, passerelle ; les montagnes russes passent au-dessus ou en tunnel). Ne terrasse que si " +
-            "l'utilisateur le demande ou l'accepte : alors session_set_landscape { allowed: true, userRequest: '<sa demande>' }.",
+            "l'utilisateur le demande ou l'accepte : alors session_set_landscape { allowed: true, userRequest: '<sa demande>' }. " +
+            "Dans l'emprise d'une demande Magic Fill ouverte (magic_fill_requests : target.bbox), le relief est déjà permis.",
     });
 }
 

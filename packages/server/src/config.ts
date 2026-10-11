@@ -10,6 +10,8 @@ export interface Config {
     port: number;
     token: string | null;
     userDir: string;
+    /** Base de styles (Style Picker) et demandes Magic Fill : OPENRCT2_STYLES_DIR, sinon <userDir>/claude-styles. */
+    stylesDir: string;
     bin: string | null;
     logLevel: "debug" | "info" | "warn" | "error";
     logFile: string | null;
@@ -49,6 +51,7 @@ export function loadConfig(env = process.env): Config {
         port: Number(env.OPENRCT2_PORT ?? DEFAULT_PORT),
         token: readToken(userDir, env),
         userDir,
+        stylesDir: env.OPENRCT2_STYLES_DIR ?? join(userDir, "claude-styles"),
         bin: env.OPENRCT2_BIN ?? null,
         logLevel: ["debug", "info", "warn", "error"].includes(level) ? level : "info",
         logFile: env.OPENRCT2_LOG_FILE ?? null,

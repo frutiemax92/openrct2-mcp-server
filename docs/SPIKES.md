@@ -447,7 +447,25 @@ En jeu (parc « Six Flags », sandbox), `coaster_place_design` puis `coaster_tes
 
 Entrées et sorties posées à leur place, couleurs du design appliquées, aucun accident. L'excitation est plus basse sans la scénerie du design (non posée). La vitesse max d'un `.td6` vaut `v × 9 / 4` mph (`ToHumanReadableSpeed(v << 16)`).
 
+## S10 : capture masquée d'une région (Style Picker, SPEC 13.7)
+
+### Question
+Peut-on, depuis un plugin, capturer une région du parc avec tout le reste masqué (`instructions_style_picker.md` : « to determine if doable via the plugin system ») ?
+
+### Expérience (lecture seule, 10 octobre 2026)
+- `ScTileElement.cpp:1379` : `isHidden` (écriture) appelle `setInvisible` puis invalide la tuile, après `JS_THROW_IF_GAME_STATE_NOT_MUTABLE` (refusé en multijoueur).
+- `Paint.TileElement.cpp:212` : `if (tile_element->isInvisible()) continue;` dans la boucle de dessin de chaque tuile, surfaces comprises.
+- `Screenshot.cpp:652` : `options.Transparent` → `ViewportFlag::transparentBackground`, fond rempli de l'index transparent (`:243`).
+- Les entités (visiteurs, véhicules) sont dessinées à part des éléments de tuile : `isHidden` ne les touche pas.
+
+### Résultat
+Oui, avec deux étages : le plugin cache les éléments des tuiles voisines (16 tuiles de marge), capture avec `transparent: true` puis rétablit dans la même frame (rien n'avance entre-temps, `captureImage` est synchrone) ; le serveur efface ensuite les pixels hors de l'emprise projetée de la région (projection F34), ce qui retire les entités hors région. Restent visibles les entités dans la région.
+
+### Décision
+Implémenté (`packages/plugin/src/styles/capture.ts`, `packages/server/src/render/mask.ts`). **À confirmer en jeu** : rendu effectif (aucun élément voisin visible, fond transparent dans le PNG), aucun élément resté caché après la capture, coût de la frame pour une région de 50×50.
+
 ## Restent à faire en jeu
+- S10 : capture masquée du Style Picker et fenêtres Style Picker / Magic Fill Tool (`docs/STYLE_TOOLS.md` § 7).
 - `.td6` : pose de la scénerie des designs (objets DAT, quadrants, murs).
 - Localiser l'endroit d'un calage ou d'un pic de G (échantillonnage des véhicules pendant le test).
 - S2 : origine des empreintes non carrées pour les directions 2 et 3.

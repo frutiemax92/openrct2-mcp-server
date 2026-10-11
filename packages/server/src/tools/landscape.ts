@@ -98,7 +98,6 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
             },
         },
         async (a) => {
-            requireLandscape(ctx, "terrain_shape", a.dryRun);
             let area: TileRect;
             let core: TileRect | null = null;
             if (a.op === "hill" || a.op === "valley") {
@@ -117,6 +116,8 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
                     area = { x1: core.x1 - m, y1: core.y1 - m, x2: core.x2 + m, y2: core.y2 + m };
                 }
             }
+            // Toute la zone de travail (talus du plateau compris) doit tenir dans la région Magic Fill.
+            requireLandscape(ctx, "terrain_shape", a.dryRun, area);
             area = await ctx.cache.clamp(area);
             if (rectArea(area) > MAX_SHAPE_TILES) toolError("INVALID_PARAMS", `Zone de travail trop grande (${rectArea(area)} tuiles, max ${MAX_SHAPE_TILES}).`, { hint: "Découpe en plusieurs appels ou réduis le rayon." });
             const reg = await ctx.cache.region({ x1: area.x1 - 1, y1: area.y1 - 1, x2: area.x2 + 1, y2: area.y2 + 1 });
@@ -215,7 +216,7 @@ export function registerLandscapeTools(server: McpServer, ctx: ToolContext): voi
             },
         },
         async ({ x1, y1, x2, y2, shape, depth, level, dryRun }) => {
-            requireLandscape(ctx, "water_create_lake", dryRun);
+            requireLandscape(ctx, "water_create_lake", dryRun, normalizeRect({ x1, y1, x2, y2 }));
             const rect = await ctx.cache.clamp({ x1, y1, x2, y2 });
             if (rect.x2 - rect.x1 < 2 || rect.y2 - rect.y1 < 2) toolError("INVALID_PARAMS", "Lac trop petit (3×3 tuiles au minimum).");
             if (rectArea(rect) > MAX_SHAPE_TILES) toolError("INVALID_PARAMS", `Zone trop grande (max ${MAX_SHAPE_TILES} tuiles).`);

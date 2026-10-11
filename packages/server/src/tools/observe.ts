@@ -24,7 +24,7 @@ export function rideCategory(type: number): string | null {
     return RIDE_TYPES.find((r) => r.rideType === type)?.category ?? null;
 }
 
-async function waitForFile(file: string, timeoutMs: number): Promise<boolean> {
+export async function waitForFile(file: string, timeoutMs: number): Promise<boolean> {
     const start = Date.now();
     while (Date.now() - start < timeoutMs) {
         if (existsSync(file)) {

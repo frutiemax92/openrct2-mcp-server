@@ -24,6 +24,7 @@
 | Captures | `<dossier utilisateur>/screenshot/` (vérifié ; **doit exister**, le serveur le crée) |
 | Sauvegardes et checkpoints | `<dossier utilisateur>/save/` ; checkpoints `claude-<nom>.park`, métadonnées (journal, zones) dans `save/claude-meta/` |
 | Designs de montagnes russes (`.td6`/`.td7`) | `<game_path>/Tracks`, `<dossier utilisateur>/track/`, plus `OPENRCT2_TRACKS_DIR` (dossiers séparés par `:`) |
+| Base de styles (Style Picker) et demandes Magic Fill | `OPENRCT2_STYLES_DIR`, sinon `<dossier utilisateur>/claude-styles/` (`styles/<id>/`, `magic-fill/`) ; styles en attente du serveur : clé `claude-bridge.pendingStyles` de `plugin.store.json` |
 | Recettes de scénerie | `data/recipes/<thème>.json` (lues au démarrage du serveur) |
 | Jeton du pont | `<dossier utilisateur>/plugin.store.json` → `{"claude-bridge":{"token":"…"}}` |
 | Données OpenRCT2 d'un build CMake non installé | `../build/usr/local/share/openrct2` (passées par `--openrct2-data-path`) |

@@ -19,7 +19,7 @@ import {
     type TimeStatus,
 } from "@openrct2-claude/protocol";
 import { act } from "../actions";
-import { invalidateObjects } from "../objects";
+import { findInstalled, invalidateObjects } from "../objects";
 import { NEXT_FRAME, type Job } from "../queue";
 import { fail, isInt, log, requireArray, requireInt, requireParkLoaded, requireSafeName } from "../util";
 import { capabilities, dateInfo } from "./session";
@@ -117,6 +117,24 @@ export function* list(params: ObjectsListParams): Job {
     return result;
 }
 
+/** Emplacements par type d'objet dans un parc (ObjectLimits.h). */
+function objectLimit(type: string): number {
+    switch (type) {
+        case "ride":
+        case "small_scenery":
+        case "large_scenery":
+        case "wall":
+            return 2047;
+        case "water":
+        case "scenario_meta":
+        case "peep_names":
+        case "climate":
+            return 1;
+        default:
+            return 255;
+    }
+}
+
 export function* load(params: ObjectsLoadParams): Job {
     requireParkLoaded();
     const ids = requireArray<string>(params as never, "identifiers", 100);
@@ -126,22 +144,29 @@ export function* load(params: ObjectsLoadParams): Job {
             results.push({ identifier: String(id), ok: false, index: null, type: null, error: "identifiant invalide" });
             continue;
         }
-        const installed = objectManager.getInstalledObject(id);
+        const installed = findInstalled(id);
         if (!installed) {
-            results.push({ identifier: id, ok: false, index: null, type: null, error: "objet non installé" });
+            results.push({ identifier: id, ok: false, index: null, type: null, error: "objet non installé", reason: "not_installed" });
             continue;
         }
         let loaded: LoadedObject | null = null;
         try {
             loaded = objectManager.load(id);
         } catch (e) {
-            results.push({ identifier: id, ok: false, index: null, type: installed.type, error: String(e) });
+            results.push({ identifier: id, ok: false, index: null, type: installed.type, error: String(e), reason: "error" });
             continue;
         }
+        if (loaded) {
+            results.push({ identifier: id, ok: true, index: loaded.index, type: loaded.type });
+            continue;
+        }
+        // LoadObject ne rend null que sans emplacement libre (FindSpareSlot) ou si le fichier ne se lit pas.
+        const max = objectLimit(installed.type);
+        const count = objectManager.getAllObjects(installed.type).length;
         results.push(
-            loaded
-                ? { identifier: id, ok: true, index: loaded.index, type: loaded.type }
-                : { identifier: id, ok: false, index: null, type: installed.type, error: "chargement refusé (emplacements pleins ?)" },
+            count >= max
+                ? { identifier: id, ok: false, index: null, type: installed.type, error: `limite d'objets atteinte (${count}/${max} ${installed.type})`, reason: "limit" }
+                : { identifier: id, ok: false, index: null, type: installed.type, error: "chargement refusé par le jeu", reason: "error" },
         );
         yield;
     }

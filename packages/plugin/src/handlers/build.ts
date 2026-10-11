@@ -22,6 +22,8 @@ import {
     type SceneryRemoveSmallParams,
     type TerrainSetHeightsParams,
     type TerrainSetSurfaceParams,
+    type TerrainSetSurfaceTilesParams,
+    type TerrainSurfaceItem,
     type TerrainSetWaterParams,
     type TileOutcome,
     type WallPlaceParams,
@@ -73,6 +75,12 @@ function* runBulk<T extends { x: number; y: number }>(items: T[], dryRun: boolea
     return result;
 }
 
+/** Hauteur exacte (Magic Fill) : baseHeight entier de 2 à 254, en unités monde. */
+function baseHeightZ(v: unknown): number {
+    if (!isInt(v) || v < MIN_LAND_BASE_HEIGHT || v > 254) fail("INVALID_PARAMS", `'baseHeight' : entier attendu entre ${MIN_LAND_BASE_HEIGHT} et 254.`);
+    return v * 8;
+}
+
 function levelOrFail(v: unknown, key = "level"): number {
     if (!isInt(v) || v < MIN_LEVEL || v > MAX_LEVEL) fail("INVALID_PARAMS", `'${key}' : niveau entier attendu entre ${MIN_LEVEL} et ${MAX_LEVEL}.`);
     return v;
@@ -115,6 +123,32 @@ export function* setSurface(params: TerrainSetSurfaceParams): Job {
         !!params.dryRun,
     );
     return outcome(r);
+}
+
+/** Surface et bordure tuile par tuile (Magic Fill : texture recopiée des styles). Objet non chargé : échec de la tuile. */
+export function* setSurfaceTiles(params: TerrainSetSurfaceTilesParams): Job {
+    requireParkLoaded();
+    const tiles = requireArray<TerrainSurfaceItem>(params as never, "tiles", LIMITS.maxOpsPerRequest);
+    const dryRun = !!params.dryRun;
+    const NONE = 0xffff;
+    const indices: { [k: string]: number } = {};
+    const indexOf = (type: "terrain_surface" | "terrain_edge", ref: TerrainSurfaceItem["surfaceObject"]): number => {
+        if (ref == null) return NONE;
+        const k = `${type}:${ref}`;
+        if (indices[k] === undefined) indices[k] = resolveLoaded([type], ref).index;
+        return indices[k];
+    };
+    return yield* runBulk(tiles, dryRun, function* (t) {
+        const surface = indexOf("terrain_surface", t.surfaceObject);
+        const edge = indexOf("terrain_edge", t.edgeObject);
+        if (surface === NONE && edge === NONE) fail("INVALID_PARAMS", "Indique surfaceObject et/ou edgeObject.");
+        return yield* act(
+            "surfacesetstyle",
+            { ...rectToWorldRange({ x1: t.x, y1: t.y, x2: t.x, y2: t.y }), surfaceStyle: surface, edgeStyle: edge, surfaceColour1: 0, edgeColour1: 0 },
+            dryRun,
+            { tile: { x: t.x, y: t.y } },
+        );
+    });
 }
 
 export function* setWater(params: TerrainSetWaterParams): Job {
@@ -248,7 +282,7 @@ export function* placeSmall(params: SceneryPlaceParams): Job {
         if (!isInt(quadrant) || quadrant < 0 || quadrant > 3) fail("INVALID_PARAMS", "'quadrant' : 0 à 3.");
         if (!isInt(direction) || direction < 0 || direction > 3) fail("INVALID_PARAMS", "'direction' : 0 à 3.");
         // z = 0 : hauteur automatique (surface ou eau), SmallSceneryPlaceAction.cpp
-        const z = it.level != null ? levelToZ(levelOrFail(it.level)) : 0;
+        const z = it.baseHeight != null ? baseHeightZ(it.baseHeight) : it.level != null ? levelToZ(levelOrFail(it.level)) : 0;
         return yield* act(
             "smallsceneryplace",
             { x: tileToWorld(it.x), y: tileToWorld(it.y), z, direction, quadrant, object: obj, ...colours(it.colours) },
@@ -265,7 +299,7 @@ export function* placeLarge(params: LargeSceneryPlaceParams): Job {
     return yield* runBulk(items, dryRun, function* (it): TileStep {
         const obj = resolveLoaded(["large_scenery"], it.object).index;
         const direction = it.direction ?? 0;
-        const z = it.level != null ? levelToZ(levelOrFail(it.level)) : surfaceZ(it.x, it.y);
+        const z = it.baseHeight != null ? baseHeightZ(it.baseHeight) : it.level != null ? levelToZ(levelOrFail(it.level)) : surfaceZ(it.x, it.y);
         return yield* act(
             "largesceneryplace",
             { x: tileToWorld(it.x), y: tileToWorld(it.y), z, direction, object: obj, ...colours(it.colours) },
@@ -288,7 +322,7 @@ export function* placeWall(params: WallPlaceParams): Job {
     return yield* runBulk(items, dryRun, function* (it): TileStep {
         const obj = resolveLoaded(["wall"], it.object).index;
         if (!isInt(it.edge) || it.edge < 0 || it.edge > 3) fail("INVALID_PARAMS", "'edge' : 0 à 3.");
-        const z = it.level != null ? levelToZ(levelOrFail(it.level)) : surfaceZ(it.x, it.y);
+        const z = it.baseHeight != null ? baseHeightZ(it.baseHeight) : it.level != null ? levelToZ(levelOrFail(it.level)) : surfaceZ(it.x, it.y);
         return yield* act(
             "wallplace",
             { x: tileToWorld(it.x), y: tileToWorld(it.y), z, object: obj, edge: it.edge, ...colours(it.colours) },
@@ -306,7 +340,7 @@ export function* removeSmall(params: SceneryRemoveSmallParams): Job {
         const obj = resolveLoaded(["small_scenery"], it.object).index;
         return yield* act(
             "smallsceneryremove",
-            { x: tileToWorld(it.x), y: tileToWorld(it.y), z: levelToZ(it.level), object: obj, quadrant: it.quadrant ?? 0 },
+            { x: tileToWorld(it.x), y: tileToWorld(it.y), z: it.baseHeight != null ? baseHeightZ(it.baseHeight) : levelToZ(it.level), object: obj, quadrant: it.quadrant ?? 0 },
             dryRun,
             { tile: { x: it.x, y: it.y } },
         );

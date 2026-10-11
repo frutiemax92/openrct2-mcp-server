@@ -4,6 +4,17 @@
 
 import type { Direction, TileRect, TileXY } from "./coords.js";
 import type { BridgeError } from "./errors.js";
+import type {
+    InboxAckParams,
+    InboxTakeResult,
+    UiAlertParams,
+    MagicFillStatusParams,
+    MaskedCaptureParams,
+    MaskedCaptureResult,
+    StyleRecord,
+    StylesCaptureParams,
+    StylesExtractParams,
+} from "./styles.js";
 
 /** Référence d'objet : identifiant (« rct2.burgb ») ou index d'objet chargé. */
 export type ObjectRef = string | number;
@@ -231,6 +242,19 @@ export interface TerrainSetSurfaceParams extends TileRect {
     dryRun?: boolean;
 }
 
+/** Texture tuile par tuile (Magic Fill) : null ou absent = inchangé. */
+export interface TerrainSurfaceItem {
+    x: number;
+    y: number;
+    surfaceObject?: ObjectRef | null;
+    edgeObject?: ObjectRef | null;
+}
+
+export interface TerrainSetSurfaceTilesParams {
+    tiles: TerrainSurfaceItem[];
+    dryRun?: boolean;
+}
+
 export interface TerrainSetWaterParams extends TileRect {
     /** Niveau d'eau ; 0 pour retirer l'eau. */
     level: number;
@@ -441,6 +465,8 @@ export interface SmallSceneryItem {
     y: number;
     /** Niveau ; absent = hauteur automatique (surface ou eau). */
     level?: number | null;
+    /** Hauteur exacte en baseHeight (unités de 8) ; prioritaire sur level (Magic Fill, empilements Zero Clearances). */
+    baseHeight?: number | null;
     quadrant?: number;
     direction?: Direction;
     colours?: [number?, number?, number?];
@@ -456,6 +482,8 @@ export interface LargeSceneryItem {
     x: number;
     y: number;
     level?: number | null;
+    /** Hauteur exacte en baseHeight (unités de 8) ; prioritaire sur level (Magic Fill, empilements Zero Clearances). */
+    baseHeight?: number | null;
     direction?: Direction;
     colours?: [number?, number?, number?];
 }
@@ -470,6 +498,8 @@ export interface WallItem {
     x: number;
     y: number;
     level?: number | null;
+    /** Hauteur exacte en baseHeight (unités de 8) ; prioritaire sur level (Magic Fill, empilements Zero Clearances). */
+    baseHeight?: number | null;
     edge: Direction;
     colours?: [number?, number?, number?];
 }
@@ -494,7 +524,8 @@ export interface SceneryClearParams extends TileRect {
 }
 
 export interface SceneryRemoveSmallParams {
-    items: { x: number; y: number; level: number; object: ObjectRef; quadrant: number }[];
+    /** baseHeight (unités de 8) prioritaire sur level quand il est donné. */
+    items: { x: number; y: number; level: number; baseHeight?: number; object: ObjectRef; quadrant: number }[];
     dryRun?: boolean;
 }
 
@@ -533,7 +564,15 @@ export interface ObjectsLoadParams {
 }
 
 export interface ObjectsLoadResult {
-    results: { identifier: string; ok: boolean; index: number | null; type: string | null; error?: string }[];
+    results: {
+        identifier: string;
+        ok: boolean;
+        index: number | null;
+        type: string | null;
+        error?: string;
+        /** Cause d'un refus : objet absent de l'installation, ou emplacements de ce type pleins dans le parc. */
+        reason?: "not_installed" | "limit" | "error";
+    }[];
 }
 
 // ---------------------------------------------------------------------------
@@ -848,6 +887,7 @@ export interface MethodMap {
     "map.ownership.set": [OwnershipParams, ActionOutcome];
     "terrain.set_heights": [TerrainSetHeightsParams, BulkResult];
     "terrain.set_surface": [TerrainSetSurfaceParams, ActionOutcome];
+    "terrain.set_surface_tiles": [TerrainSetSurfaceTilesParams, BulkResult];
     "terrain.set_water": [TerrainSetWaterParams, BulkResult];
     "path.place_tiles": [PathPlaceParams, BulkResult];
     "path.remove_tiles": [PathRemoveParams, BulkResult];
@@ -888,6 +928,13 @@ export interface MethodMap {
     "staff.set_orders": [{ id: number; orders: number }, ActionOutcome];
     "staff.set_patrol": [{ id: number; rect: TileRect; mode: "set" | "unset" | "clear" }, ActionOutcome];
     "staff.list": [Record<string, never>, { staff: StaffInfo[] }];
+    "styles.capture": [StylesCaptureParams, StyleRecord];
+    "styles.extract": [StylesExtractParams, StyleRecord];
+    "inbox.take": [Record<string, never>, InboxTakeResult];
+    "inbox.ack": [InboxAckParams, { removed: number }];
+    "capture.masked": [MaskedCaptureParams, MaskedCaptureResult];
+    "magic_fill.status": [MagicFillStatusParams, { known: boolean }];
+    "ui.alert": [UiAlertParams, { shown: boolean }];
 }
 
 export type MethodName = keyof MethodMap;

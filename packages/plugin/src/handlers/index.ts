@@ -7,6 +7,7 @@ import * as ratings from "./ratings";
 import * as ride from "./ride";
 import * as session from "./session";
 import * as staff from "./staff";
+import * as styles from "./styles";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 /** Tâche exécutée au début de la frame suivante, hors file. `changesMap` : elle charge un parc (voir main.ts). */
@@ -30,6 +31,7 @@ export const handlers: Record<string, Handler> = {
     "map.ownership.set": parkH.ownershipSet,
     "terrain.set_heights": build.setHeights,
     "terrain.set_surface": build.setSurface,
+    "terrain.set_surface_tiles": build.setSurfaceTiles,
     "terrain.set_water": build.setWater,
     "path.place_tiles": build.pathPlace,
     "path.remove_tiles": build.pathRemove,
@@ -70,6 +72,13 @@ export const handlers: Record<string, Handler> = {
     "time.status": misc.status,
     "time.run": misc.run,
     "batch.execute": misc.batch,
+    "styles.capture": styles.capture,
+    "styles.extract": styles.extract,
+    "inbox.take": styles.take,
+    "inbox.ack": styles.ack,
+    "capture.masked": styles.maskedCaptureJob,
+    "magic_fill.status": styles.fillStatus,
+    "ui.alert": styles.alert,
 };
 
 /** Délai propre à certaines méthodes (ms). */

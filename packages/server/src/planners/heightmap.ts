@@ -13,7 +13,7 @@
 import { MAX_LEVEL, MIN_LEVEL, SLOPE, type RegionTile, type TerrainHeightItem, type TileRect } from "@openrct2-claude/protocol";
 
 /** Ordre des coins : S, E, N, W (décalage du sommet, bit de pente). */
-const CORNERS: readonly { dx: number; dy: number; bit: number }[] = [
+export const CORNERS: readonly { dx: number; dy: number; bit: number }[] = [
     { dx: 0, dy: 0, bit: SLOPE.S },
     { dx: 1, dy: 0, bit: SLOPE.E },
     { dx: 1, dy: 1, bit: SLOPE.N },

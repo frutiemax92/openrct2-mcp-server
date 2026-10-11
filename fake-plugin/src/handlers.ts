@@ -15,6 +15,11 @@ import {
     type ActionOutcome,
     type BridgeError,
     type BulkResult,
+    type MagicFillRequest,
+    type StyleElement,
+    type StyleRecord,
+    type StyleScreenshot,
+    type StyleSurface,
     type Direction,
     type MethodName,
     type ObjectInfo,
@@ -163,6 +168,79 @@ export class FakeGame {
         w.parkName = d.parkName;
         w.loaded = new Map(d.loaded);
         w.nextRideId = d.nextRideId;
+    }
+
+    /** Boîte d'envoi simulée (Style Picker et Magic Fill Tool en jeu). */
+    inboxStyles: StyleRecord[] = [];
+    inboxFills: MagicFillRequest[] = [];
+    inboxClear = false;
+    /** Dernier « Clear all styles » acquitté par le serveur (nombre supprimé). */
+    lastCleared: number | null = null;
+    alerts: { title: string; message: string }[] = [];
+    fillStatus = new Map<string, { status: string; message: string }>();
+    private styleCounter = 0;
+
+    private writeShots(name: string, rotations: number[], tiles: { x: number; y: number }[]): StyleScreenshot[] {
+        const dir = join(this.opts.userDir!, "screenshot");
+        mkdirSync(dir, { recursive: true });
+        const c = tiles[0] ?? { x: 0, y: 0 };
+        return rotations.map((rotation) => {
+            const file = `${name}-r${rotation}.png`;
+            writeFileSync(join(dir, file), TINY_PNG);
+            return { rotation, zoom: 0, file, width: 1, height: 1, centerX: c.x * 32 + 16, centerY: c.y * 32 + 16, centerZ: this.world.tile(c.x, c.y).h * 16 };
+        });
+    }
+
+    /** Relevé d'une région du monde simulé au format du Style Picker. */
+    styleRecord(p: Params, withShots: boolean): StyleRecord {
+        const w = this.world;
+        const tiles: { x: number; y: number }[] = p.tiles.filter((t: { x: number; y: number }) => w.inMap(t.x, t.y));
+        if (!tiles.length) fail("INVALID_PARAMS", "Aucune tuile dans la carte.");
+        const x1 = Math.min(...tiles.map((t) => t.x));
+        const y1 = Math.min(...tiles.map((t) => t.y));
+        const x2 = Math.max(...tiles.map((t) => t.x));
+        const y2 = Math.max(...tiles.map((t) => t.y));
+        const surfaces: StyleSurface[] = [];
+        const elements: StyleElement[] = [];
+        const objects: StyleRecord["objects"] = {};
+        for (const { x, y } of tiles) {
+            const t = w.tile(x, y);
+            const dx = x - x1;
+            const dy = y - y1;
+            const ground = t.h * 2;
+            surfaces.push({ dx, dy, baseHeight: ground, slope: t.s, surface: w.loadedObject("terrain_surface", t.t)?.identifier ?? null, edge: w.loadedObject("terrain_edge", t.te ?? 0)?.identifier ?? null, water: t.w * 2, grassLength: 0, ownership: t.o, parkFences: 0 });
+            for (const sm of t.small) {
+                const o = w.loadedObject("small_scenery", sm.object);
+                if (o) objects[sm.object] = { type: "small_scenery", name: o.name, flags: (o.extra?.flags as number) ?? 0, height: (o.extra?.height as number) ?? 0 };
+                const bh = sm.l * 2;
+                elements.push({ t: "small_scenery", dx, dy, baseHeight: bh, clearanceHeight: bh + 8, dz: bh - ground, occupiedQuadrants: sm.fullTile ? 15 : 1 << sm.quadrant, object: sm.object, direction: sm.direction, quadrant: sm.quadrant, colours: (sm.colours as [number, number, number]) ?? [0, 0, 0], age: 0 });
+            }
+            for (const pa of t.paths) elements.push({ t: "footpath", dx, dy, baseHeight: pa.l * 2, clearanceHeight: pa.l * 2 + 4, dz: pa.l * 2 - ground, occupiedQuadrants: 15, object: pa.object, isQueue: pa.q, edges: pa.e });
+            for (const tr of t.tracks) elements.push({ t: "track", dx, dy, baseHeight: tr.l * 2, clearanceHeight: tr.l * 2 + 4, dz: tr.l * 2 - ground, occupiedQuadrants: 15, ride: tr.ride, trackType: tr.trackType, direction: tr.direction });
+            for (const wl of t.walls) elements.push({ t: "wall", dx, dy, baseHeight: wl.l * 2, clearanceHeight: wl.l * 2 + 4, dz: wl.l * 2 - ground, occupiedQuadrants: 0, object: wl.object, direction: wl.edge, colours: [0, 0, 0] });
+        }
+        const id = `style-fake${++this.styleCounter}`;
+        const record: StyleRecord = {
+            format: 1,
+            id,
+            caption: p.caption ?? "",
+            createdAt: new Date().toISOString(),
+            source: p.source ?? "claude",
+            park: { name: w.parkName, mapSize: { x: w.sizeX, y: w.sizeY } },
+            origin: { x: x1, y: y1 },
+            size: { x: x2 - x1 + 1, y: y2 - y1 + 1 },
+            tiles: tiles.map((t) => [t.x - x1, t.y - y1] as [number, number]),
+            surfaces,
+            elements,
+            objects,
+            rides: [],
+            screenshots: [],
+        };
+        if (withShots && p.screenshot !== false) {
+            if (this.opts.userDir) record.screenshots = this.writeShots(id, p.rotations ?? [0, 1, 2, 3], tiles);
+            else record.screenshotError = "captureImage indisponible";
+        }
+        return record;
     }
 
     handle(method: MethodName | string, p: Params): unknown {
@@ -343,6 +421,19 @@ export class FakeGame {
                 if (!p.dryRun && idx !== null) for (let y = r.y1; y <= r.y2; y++) for (let x = r.x1; x <= r.x2; x++) if (w.inMap(x, y)) w.tile(x, y).t = idx;
                 return OK(0);
             }
+            case "terrain.set_surface_tiles":
+                return this.bulk(p.tiles, !!p.dryRun, (t: Params) => {
+                    const surface = t.surfaceObject != null ? w.loadedIndex("terrain_surface", t.surfaceObject) : null;
+                    const edge = t.edgeObject != null ? w.loadedIndex("terrain_edge", t.edgeObject) : null;
+                    if ((t.surfaceObject != null && surface === null) || (t.edgeObject != null && edge === null))
+                        return { ok: false, cost: 0, error: { code: "OBJECT_NOT_LOADED", message: "Objet de terrain non chargé." } };
+                    if (!p.dryRun) {
+                        const ft = w.tile(t.x, t.y);
+                        if (surface !== null) ft.t = surface;
+                        if (edge !== null) ft.te = edge;
+                    }
+                    return OK(0);
+                });
             case "terrain.set_water": {
                 const r = normalizeRect(p);
                 const tiles = [];
@@ -554,31 +645,41 @@ export class FakeGame {
                     const f = this.buildCheck("smallsceneryplace", it.x, it.y);
                     if (f) return f;
                     const ft = w.tile(it.x, it.y);
-                    const l = it.level ?? ft.h;
+                    const l = it.baseHeight != null ? it.baseHeight / 2 : (it.level ?? ft.h);
                     const q = it.quadrant ?? 0;
-                    if (ft.paths.some((x) => Math.abs(x.l - l) < 2) || ft.tracks.length || ft.entrances.length) {
+                    const zero = w.cheats.disableClearanceChecks === true;
+                    if (!zero && (ft.paths.some((x) => Math.abs(x.l - l) < 2) || ft.tracks.length || ft.entrances.length)) {
                         return gameFail("smallsceneryplace", GAME_STATUS.noClearance, "Can't position this here...", "Footpath in the way");
                     }
                     // Un objet « tuile entière » (arbre) exclut tout autre objet au même niveau, quel que soit le quadrant.
                     const fullTile = !!(((w.loadedObject("small_scenery", it.object)?.extra?.flags as number) ?? 0) & 1);
-                    const clash = ft.small.some((s) => Math.abs(s.l - l) < 2 && (s.fullTile || fullTile || s.quadrant === q));
+                    const clash = !zero && ft.small.some((s) => Math.abs(s.l - l) < 2 && (s.fullTile || fullTile || s.quadrant === q));
                     if (clash) return gameFail("smallsceneryplace", GAME_STATUS.noClearance, "Can't position this here...", "Tree in the way");
                     const s = this.spend(10, !!p.dryRun);
                     if (s) return s;
-                    if (!p.dryRun) ft.small.push({ object: String(it.object), fullTile, quadrant: q, direction: it.direction ?? 0, l });
+                    if (!p.dryRun) ft.small.push({ object: String(it.object), fullTile, quadrant: q, direction: it.direction ?? 0, l, colours: it.colours });
                     return { ...OK(10), level: l };
                 });
             case "scenery.remove_small":
                 return this.bulk(p.items, !!p.dryRun, (it: Params) => {
                     const ft = w.tile(it.x, it.y);
-                    const i = ft.small.findIndex((s) => s.l === it.level && s.quadrant === (it.quadrant ?? 0) && s.object === String(it.object));
+                    const lv = it.baseHeight != null ? it.baseHeight / 2 : it.level;
+                    const i = ft.small.findIndex((s) => s.l === lv && s.quadrant === (it.quadrant ?? 0) && s.object === String(it.object));
                     if (i < 0) return { ok: false, error: { code: "NOT_FOUND", message: "Scénerie introuvable." } };
                     if (!p.dryRun) ft.small.splice(i, 1);
                     return OK(-2);
                 });
             case "scenery.place_large":
             case "scenery.place_wall":
-                return this.bulk(p.items, !!p.dryRun, () => OK(20));
+                return this.bulk(p.items, !!p.dryRun, (it: Params) => {
+                    const ft = w.tile(it.x, it.y);
+                    const l = it.baseHeight != null ? it.baseHeight / 2 : (it.level ?? ft.h);
+                    if (!p.dryRun) {
+                        if (method === "scenery.place_large") ft.large.push({ object: String(it.object), l });
+                        else ft.walls.push({ object: String(it.object), edge: it.edge, l });
+                    }
+                    return { ...OK(20), level: l };
+                });
             case "scenery.clear_region": {
                 const r = normalizeRect(p);
                 const items = p.items ?? 11;
@@ -661,6 +762,36 @@ export class FakeGame {
             }
             case "staff.list":
                 return { staff: w.staff.map((x) => ({ id: x.id, type: x.type, name: `${x.type} ${x.id}`, orders: x.orders, tile: { x: 32, y: 40 }, patrolTiles: x.patrolTiles })) };
+            case "styles.extract":
+            case "styles.capture":
+                return this.styleRecord(p, method === "styles.capture");
+            case "inbox.take":
+                return {
+                    styles: this.inboxStyles.slice(0, 1),
+                    fills: this.inboxFills.slice(),
+                    remaining: { styles: Math.max(0, this.inboxStyles.length - 1), fills: 0 },
+                    clearStyles: this.inboxClear || undefined,
+                };
+            case "inbox.ack": {
+                if (typeof p.clearedStyles === "number" && this.inboxClear) {
+                    this.inboxClear = false;
+                    this.lastCleared = p.clearedStyles;
+                }
+                const before = this.inboxStyles.length + this.inboxFills.length;
+                this.inboxStyles = this.inboxStyles.filter((x) => !p.styles.includes(x.id));
+                this.inboxFills = this.inboxFills.filter((x) => !p.fills.includes(x.id));
+                return { removed: before - this.inboxStyles.length - this.inboxFills.length };
+            }
+            case "capture.masked": {
+                if (!this.opts.userDir) fail("NOT_SUPPORTED_IN_MODE", "captureImage indisponible.");
+                return { screenshots: this.writeShots(p.name, p.rotations ?? [0, 1, 2, 3], p.tiles), hidden: 0 };
+            }
+            case "ui.alert":
+                this.alerts.push({ title: p.title, message: p.message });
+                return { shown: true };
+            case "magic_fill.status":
+                this.fillStatus.set(p.id, { status: p.status, message: p.message ?? "" });
+                return { known: true };
             case "batch.execute": {
                 const results = p.ops.map((op: { action: string; args: Record<string, unknown> }, index: number) => {
                     const check = checkActionArgs(op.action, op.args);

@@ -18,6 +18,7 @@ import { registerObserveTools } from "./tools/observe.js";
 import { registerRideTools } from "./tools/rides.js";
 import { registerSceneryTools } from "./tools/scenery.js";
 import { registerStaffTools } from "./tools/staff.js";
+import { registerStyleTools } from "./tools/styles.js";
 import { registerSessionTools } from "./tools/session.js";
 
 export const SERVER_VERSION = "0.1.0";
@@ -34,7 +35,7 @@ Méthode
 7. En cas d'échec, lis le hint, corrige la cause (terrain, propriété, objet non chargé) puis réessaie. Après deux échecs identiques, change d'approche.
 
 Règles
-- Relief : ne modifie jamais le terrain (hauteurs, pentes, eau, surface) sans que l'utilisateur le demande ou l'accepte. Par défaut, adapte-toi au terrain : autre site, level, passerelle ; une montagne russe passe au-dessus du relief ou en tunnel dessous (une pièce entière sous la surface), sans le toucher. Si l'utilisateur le permet : session_set_landscape { allowed: true, userRequest } avant terrain_flatten, terrain_set_surface, terrain_shape ou water_create_lake.
+- Relief : ne modifie jamais le terrain (hauteurs, pentes, eau, surface) sans que l'utilisateur le demande ou l'accepte. Par défaut, adapte-toi au terrain : autre site, level, passerelle ; une montagne russe passe au-dessus du relief ou en tunnel dessous (une pièce entière sous la surface), sans le toucher. Si l'utilisateur le permet : session_set_landscape { allowed: true, userRequest } avant terrain_flatten, terrain_set_surface, terrain_shape ou water_create_lake. Exception : dans l'emprise d'une demande Magic Fill ouverte (target.bbox), le relief est déjà permis.
 - Coordonnées en tuiles ; hauteurs en niveaux (1 niveau = 1 marche de terrain). Direction : 0 = −x, 1 = +y, 2 = +x, 3 = −y.
 - N'invente jamais d'identifiant d'objet : list_objects (loadedOnly) puis load_objects si besoin.
 - Ne place jamais des dizaines d'arbres un par un : zones_paint puis scenery_scatter_zone (thème, seed). scenery_place sert aux accents.
@@ -58,6 +59,7 @@ Règles
   · Sections de bloc : layout.blocks donne les limites de section (station, sommets de lift, freins de bloc) et les trains permis (sections − 1). Reprends celles de la référence (Frightmare : lift, 2 freins de bloc, station → 3 trains) avec block_brakes, sur du plat en hauteur et assez long pour le train, après le premier lift (avant lui, seulement collé au pied de la chaîne, avec la longueur du train entre la station et le frein). Le dernier frein de bloc va au bout des freins d'arrivée en gare (brakes puis block_brakes) ; n'en pose pas deux près l'un de l'autre, le second n'ajoute presque rien. Puis ride_configure { trains }, attraction fermée.
   · Impasse : si coaster_build_plan ou coaster_search_section signale exitBlocked (obstacle juste devant le bout du circuit : chemin, file d'attente, autre attraction), élargir bounds ou relancer ne sert à rien. coaster_undo le dernier élément (souvent la première chute) et refais-le pour qu'il débouche sur des tuiles libres, ou retire l'obstacle. POCHE (avertissement de coaster_build_plan) ou « REPLI NÉCESSAIRE » (coaster_search_section) : le bout est enfermé entre chemins et attractions. coaster_search_section recule d'elle-même (backtrack) : fais exactement coaster_undo { count: undo } puis coaster_build_plan { plan: variants[0].plan } (le plan commence par la nouvelle première chute) ; n'élargis pas bounds.
   · Un grand circuit (80 à 120 pièces) se construit en plusieurs coaster_build_plan close: false de 10 à 20 macros, en lisant layout et warnings à chaque étape, puis plan: [] close: true.
+- Styles et Magic Fill : l'utilisateur annote des régions réussies dans le jeu (Style Picker, menu des plugins : base de styles) et peint des régions à remplir avec une consigne (Magic Fill Tool). Quand il parle de Magic Fill ou de styles : magic_fill_requests (wait pour attendre le prochain trait) → style_get des candidats qui vont avec la consigne ET le voisinage (around) → magic_fill_apply { request, styles: [{ id, weight }] } → compare RESULT aux STYLES sur l'image ; si ça ne ressemble pas, undo_last puis autres styles, poids, density ou seed. Refaire une demande déjà remplie (« pareil mais collines plus hautes ») : magic_fill_apply { request, redo: true, reliefScale… } revient au checkpoint pris avant le remplissage puis remplit ; ne vide jamais la scénerie et n'aplanis jamais le terrain à la main pour refaire. Une nouvelle demande sur une région déjà remplie (previousFills) : magic_fill_revert de l'ancienne d'abord. Aucun style ne convient : magic_fill_dismiss avec la raison. style_save annote une zone désignée par coordonnées.
 - Montagne russe toute faite : coaster_list_designs (filtre query, maxSize) → coaster_place_design { design, x, y, direction, dryRun: true } puis sans dryRun → coaster_test. (x, y) = coin de l'emprise aux x et y minimaux.`;
 
 export interface Services {
@@ -86,5 +88,6 @@ export function createServer(bridge: BridgeLike, config: Config, recorder: Sessi
     registerAuditTools(server, ctx);
     registerStaffTools(server, ctx);
     registerCoasterTools(server, ctx);
+    registerStyleTools(server, ctx);
     return { server, ctx };
 }

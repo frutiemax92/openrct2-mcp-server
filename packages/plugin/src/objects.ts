@@ -4,9 +4,28 @@ import { FOOTPATH_SURFACE_FLAGS, type ObjectRef } from "@openrct2-claude/protoco
 import { fail } from "./util";
 
 let cache: { [type: string]: { [identifier: string]: number } } = {};
+let installedIndex: { [identifier: string]: InstalledObject } | null = null;
 
 export function invalidateObjects(): void {
     cache = {};
+}
+
+/**
+ * Objet installé par identifiant. getInstalledObject ne cherche que les objets JSON
+ * (ObjectRepository::FindObject(string_view)) : un objet DAT (« 00000001|SVGRMDM1|14067E4E »)
+ * y rend toujours null. Repli sur un index de installedObjects.
+ */
+export function findInstalled(identifier: string): InstalledObject | null {
+    const direct = objectManager.getInstalledObject(identifier);
+    if (direct) return direct;
+    let index = installedIndex;
+    if (!index) {
+        index = {};
+        const all = objectManager.installedObjects;
+        for (let i = 0; i < all.length; i++) index[all[i].identifier] = all[i];
+        installedIndex = index;
+    }
+    return index[identifier] ?? null;
 }
 
 function table(type: ObjectType): { [identifier: string]: number } {
@@ -48,7 +67,7 @@ export function findLoaded(types: ObjectType[], ref: ObjectRef): Resolved | null
 export function resolveLoaded(types: ObjectType[], ref: ObjectRef): Resolved {
     const r = findLoaded(types, ref);
     if (r) return r;
-    const installed = typeof ref === "string" ? objectManager.getInstalledObject(ref) : null;
+    const installed = typeof ref === "string" ? findInstalled(ref) : null;
     fail("OBJECT_NOT_LOADED", `Objet ${JSON.stringify(ref)} non chargé dans le parc (types : ${types.join(", ")}).`, {
         details: { object: ref, installed: !!installed },
         hint: installed ? "Charge-le avec load_objects." : "Identifiant inconnu : cherche-le avec list_objects.",
