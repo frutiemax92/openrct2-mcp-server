@@ -171,6 +171,65 @@ Add the server to `~/.copilot/mcp-config.json` (or use `/mcp add` inside the CLI
 }
 ```
 
+## 4. Use the Style Picker and the Magic Fill Tool
+
+These two in-game tools let you show the assistant what you like, then ask it to paint more of it. Open them from the
+**plugin menu** (the map icon in the game's toolbar).
+
+### Style Picker: save a region you like
+
+1. Open **Style Picker**. The brush is active as soon as the window opens.
+2. Set the brush size with **-** and **+** (from 1×1 up to 15×15 tiles), then drag over a region of the map, such as a
+   forest edge, a riverbank, or a rocky hill. Painted tiles are highlighted.
+   - Tick **Erase** to remove tiles from the selection, or click **Clear** to start over.
+   - Click **Paint** to turn the brush off and on again (for example, to move around the map).
+3. Click **Edit...** and write a caption that says what the region is, e.g. *"A river with trees, rocks and
+   bushes"*. The assistant ranks styles by these captions, so be descriptive.
+4. Click **Save Style** (2,500 tiles at most).
+
+The style keeps everything in the region: every scenery object with its colours, rotation and exact height
+(including objects stacked or sunk with **Zero Clearances**), the terrain shape, surface textures, water, and a
+screenshot of the region alone. Styles are stored in `<user dir>/claude-styles/styles/`.
+
+The status line turns green when the MCP server is connected. If it isn't, saved styles wait in the plugin (up to 8)
+and are sent the next time the server connects, even after you restart the game. **Clear all stored styles** deletes
+the whole library; click it twice to confirm.
+
+Tips:
+
+- Save several small, focused styles (a forest, a meadow, a riverbank) rather than one big mixed region.
+- Edges count: include a few tiles of the surroundings so the assistant sees how the style blends in.
+- To check what you saved, ask the assistant: *"List my styles and show me the river one."*
+
+### Magic Fill Tool: fill a region from your styles
+
+1. Open **Magic Fill Tool**.
+2. Click **Edit...** and describe what you want, e.g. *"dense pine forest"* or *"a long river zigzagging through hills
+   with trees, bushes and rocks"*.
+3. Paint the region to fill. With **Send when I release the mouse** ticked (the default), each brush stroke is sent
+   as one request when you release the mouse. Untick it to paint in several strokes, then click **Fill**.
+4. Ask the assistant to process the request, e.g. *"Handle my Magic Fill requests."* The plugin can't wake the
+   assistant up by itself. If you plan to send several requests, ask it to keep waiting for new ones (in Claude
+   Code: `/loop` *"handle Magic Fill requests as they arrive"*).
+
+The assistant picks the styles that match your prompt and the surroundings, copies whole patches of them into the
+region (rotated for variety), and then compares a screenshot of the result with the styles. Inside the painted
+region it may also:
+
+- reshape the terrain (hills, hollows and cliffs copied from the styles);
+- change surface textures;
+- add water, and carve a continuous river from one edge to the other when your prompt mentions a river or stream.
+
+It doesn't change the terrain anywhere outside the painted region, and it skips paths, rides and tiles that already
+have scenery.
+
+The three lines at the bottom of the window show your latest requests and their status: `pending`, `received`,
+`working`, then `done` (green), `failed` (red) or `dismissed`, with a short message.
+
+**Not happy with the result?** Ask the assistant to redo it, e.g. *"Redo that fill with taller hills"*, *"less
+dense"* or *"try another seed"*. It reverts to an automatic checkpoint taken just before the fill and fills again,
+so you don't need to clean anything up by hand. You can also ask it to *"revert the last fill"*.
+
 ## Troubleshooting
 
 - **Connection refused**: the game isn't running, the plugin isn't installed in the right folder, or no park is
