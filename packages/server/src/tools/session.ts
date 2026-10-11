@@ -153,6 +153,35 @@ export function registerSessionTools(server: McpServer, ctx: ToolContext): void 
     defineTool(
         server,
         ctx,
+        "session_set_clearances",
+        {
+            title: "Contrôle de dégagement (cheat Zero Clearances)",
+            description:
+                "Active (enabled: true) ou coupe le contrôle de dégagement du jeu, sans toucher aux autres cheats du mode sandbox. " +
+                "« Construis avec les clearances » : enabled: true avant de poser, la piste refuse alors de traverser scénerie, terrain " +
+                "et autres attractions (retire d'abord la grande scénerie gênante avec scenery_remove ; la petite est retirée par la pose). " +
+                "magic_fill_apply coupe le contrôle le temps de sa pose puis le rétablit.",
+            input: { enabled: z.boolean() },
+        },
+        async ({ enabled }) => {
+            const res = await ctx.bridge.call("session.cheats.set", { items: [{ cheat: "disableClearanceChecks", param1: enabled ? 0 : 1 }] });
+            const err = res.results[0] && !res.results[0].ok ? res.results[0].error : undefined;
+            if (err) toolError("GAME_ACTION_FAILED", `Cheat non appliqué : ${err.message}`);
+            const cheats = await ctx.bridge.call("session.cheats.get", {});
+            const on = cheats.disableClearanceChecks !== true;
+            return result({
+                budget: BUDGET.write,
+                response: {
+                    summary: on ? "Contrôle de dégagement actif (Zero Clearances coupé)." : "Contrôle de dégagement coupé (Zero Clearances actif).",
+                    clearanceChecks: on,
+                },
+            });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
         "session_set_paused",
         {
             title: "Pause / reprise",

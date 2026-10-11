@@ -580,6 +580,7 @@ Les noms sont indicatifs. Les outils marqués **P1** forment le MVP.
 | `session_info` | P1 | État du lien, capacités, mode (`strict`/`sandbox`), pause, parc (nom, argent, note, visiteurs, date), taille de carte, checkpoints. **Premier appel conseillé.** |
 | `session_set_mode` | P1 | `strict` ou `sandbox` (6.4). |
 | `session_set_landscape` | P1 | Autorise (ou retire) la modification du relief (9.2). Refusée par défaut ; `allowed: true` exige `userRequest`, la demande ou l'accord de l'utilisateur cité. |
+| `session_set_clearances` | P1 | Active ou coupe le contrôle de dégagement (`disableClearanceChecks`) seul, sans toucher aux autres cheats du mode sandbox. « Construire avec les clearances » : `enabled: true` avant la pose ; la grande scénerie gênante se retire avec `scenery_remove`. [DÉCISION, 10 octobre 2026] |
 | `session_set_paused` | P1 | Pause ou reprise du temps. |
 | `list_objects` | P1 | Objets installés ou chargés, filtrés par type, rôle, texte. Retour compact : `id`, `name`, `type`, `loaded`, `role`, `size` si connu. |
 | `load_objects` | P1 | Charge des objets dans le parc (F10). Signale les échecs et les limites d'emplacements. |
