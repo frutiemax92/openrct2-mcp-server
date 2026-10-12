@@ -1,7 +1,7 @@
 // Fenêtres en jeu du Style Picker et du Magic Fill Tool (SPEC 13.7), ouvertes depuis le menu des plugins
 // (icône carte de la barre d'outils). Les libellés sont en anglais, comme le reste de l'interface du jeu.
 
-import { STYLE_MAX_TILES, type MagicFillRequest, type StyleRecord, type TileXY } from "@openrct2-claude/protocol";
+import { STYLE_MAX_TILES, type MagicFillRequest, type StyleKindChoice, type StyleRecord, type TileXY } from "@openrct2-claude/protocol";
 import { captureStyle } from "../handlers/styles";
 import { enqueue } from "../queue";
 import { newId } from "../styles/extract";
@@ -15,6 +15,16 @@ const W = 260;
 const TEXT_MAX = 500;
 /** Décalage vertical des widgets sous la zone de texte (4 lignes au lieu d'un textbox de 14 px). */
 const DY = textAreaHeight() - 14;
+
+/**
+ * Nature d'un style (StyleRecord.kind) : Auto laisse le serveur la déduire des empilements ; Structure = bloc rigide
+ * posé entier à une seule hauteur (château, maison) ; Natural = patchs coupables qui suivent le terrain (forêt).
+ */
+const KINDS: { label: string; value: StyleKindChoice | null }[] = [
+    { label: "Auto (detect)", value: null },
+    { label: "Structure (placed whole, rigid)", value: "structure" },
+    { label: "Natural (cut and spread freely)", value: "natural" },
+];
 
 function setText(win: Window, name: string, text: string): void {
     try {
@@ -60,6 +70,7 @@ export function openStylePicker(): void {
         return;
     }
     let caption = "";
+    let kind = 0;
     let saving = false;
     let status = "Paint a region, describe it, then Save Style.";
     let win: Window | null = null;
@@ -101,11 +112,13 @@ export function openStylePicker(): void {
         status = "Saving…";
         update();
         const text = caption.trim();
+        const chosen = KINDS[kind].value;
         try {
             enqueue(newId("ui"), "styles.capture", captureStyle(tiles, text, "user", true, [0, 1, 2, 3]), {
                 ok: (_id, result) => {
                     saving = false;
                     const rec = result as StyleRecord;
+                    if (chosen) rec.kind = chosen;
                     inbox.addStyle(rec);
                     const n = rec.elements.length;
                     const shots = rec.screenshots.length ? `${rec.screenshots.length} screenshot(s)` : `no screenshot (${rec.screenshotError ?? "?"})`;
@@ -156,7 +169,7 @@ export function openStylePicker(): void {
         classification: "claude-style-picker",
         title: "Style Picker",
         width: W,
-        height: 192 + DY,
+        height: 210 + DY,
         widgets: [
             { type: "label", x: 10, y: 22, width: 80, height: 12, text: "Brush size:" },
             { type: "button", name: "minus", x: 90, y: 20, width: 20, height: 14, text: "-", onClick: () => brush.grow(-1) },
@@ -181,11 +194,23 @@ export function openStylePicker(): void {
             { type: "label", x: 10, y: 62, width: 170, height: 12, text: "Caption (what this region is):" },
             { type: "button", name: "editCaption", x: 190, y: 60, width: 60, height: 14, text: "Edit...", onClick: editCaption },
             textAreaWidget({ name: "caption", x: 10, y: 76, width: 240, get: () => caption, colour: () => win?.colours[1] ?? 1 }),
-            { type: "label", name: "count", x: 10, y: 96 + DY, width: 240, height: 12, text: "" },
-            { type: "button", name: "save", x: 10, y: 112 + DY, width: 240, height: 18, text: "Save Style", onClick: save },
-            { type: "button", name: "clearAll", x: 10, y: 134 + DY, width: 240, height: 14, text: "Clear all stored styles", onClick: clearAll },
-            { type: "label", name: "status", x: 10, y: 156 + DY, width: 240, height: 12, text: status },
-            { type: "label", name: "server", x: 10, y: 172 + DY, width: 240, height: 12, text: serverLine() },
+            { type: "label", x: 10, y: 96 + DY, width: 40, height: 12, text: "Kind:" },
+            {
+                type: "dropdown",
+                name: "kind",
+                x: 50,
+                y: 94 + DY,
+                width: 200,
+                height: 14,
+                items: KINDS.map((k) => k.label),
+                selectedIndex: kind,
+                onChange: (i: number) => (kind = i),
+            },
+            { type: "label", name: "count", x: 10, y: 114 + DY, width: 240, height: 12, text: "" },
+            { type: "button", name: "save", x: 10, y: 130 + DY, width: 240, height: 18, text: "Save Style", onClick: save },
+            { type: "button", name: "clearAll", x: 10, y: 152 + DY, width: 240, height: 14, text: "Clear all stored styles", onClick: clearAll },
+            { type: "label", name: "status", x: 10, y: 174 + DY, width: 240, height: 12, text: status },
+            { type: "label", name: "server", x: 10, y: 190 + DY, width: 240, height: 12, text: serverLine() },
         ],
         onClose: () => {
             unsubscribe();

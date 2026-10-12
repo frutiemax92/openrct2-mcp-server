@@ -22,6 +22,7 @@ Le plugin ne peut ni écrire de fichiers ni appeler un modèle : il produit les 
 | **Erase** | Le pinceau retire des tuiles au lieu d'en ajouter. |
 | **Clear** | Vide la sélection. |
 | Champ de texte | Légende de la région (200 caractères) : ce que c'est, ce qui la rend réussie. |
+| **Kind** | `Auto (detect)` (défaut : le serveur déduit la nature des empilements), `Structure` (construction : posée entière, en bloc rigide), `Natural` (nature : patchs coupables qui suivent le terrain). Enregistré dans `StyleRecord.kind` ; voir § 3.4. |
 | **Save Style** | Relève la sélection (2 500 tuiles au plus) et la met en file pour le serveur. |
 | **Clear all stored styles** | Vide toute la base de styles. Premier clic : le bouton s'arme (texte rouge) ; second clic : les styles en attente dans le plugin sont oubliés et le serveur supprime tous les dossiers `styles/<id>` à sa prochaine prise, avant de ranger les styles sauvés après le clic. Sans serveur connecté, la demande est gardée dans `plugin.store.json` et exécutée à la connexion suivante. |
 | Ligne d'état | Résultat de la dernière sauvegarde (éléments, captures) et lien avec le serveur MCP (vert : connecté ; rouge : styles en attente). |
@@ -93,11 +94,12 @@ Limites : un visiteur ou un véhicule **dans** la région reste visible ; un obj
 | Outil | Rôle |
 |---|---|
 | `style_list { query?, limit, cursor }` | Styles de la base : légende, taille, densité de scénerie par tuile, objets dominants, empilements (`maxDz`, `stacked`), terrain. `query` classe par pertinence (légende × 3, noms d'objets × 1, pluriels tolérés). |
-| `style_get { id, image, rotation? }` | Composition détaillée (objets, nombre, variantes de couleurs, écarts au sol), attractions et leurs couleurs, capture masquée (une rotation, ou planche des quatre). |
-| `style_save { tiles \| rect, caption }` | Claude annote lui-même une zone désignée par coordonnées, comme **Save Style**. |
+| `style_get { id, image, rotation? }` | Composition détaillée (objets, nombre, variantes de couleurs, écarts au sol), attractions et leurs couleurs, `layout` (hauteur de chaque tuile, rangées répétables), capture masquée (une rotation, ou planche des quatre). |
+| `style_save { tiles \| rect, caption, kind }` | Claude annote lui-même une zone désignée par coordonnées, comme **Save Style** (`kind` : auto, structure, natural). |
+| `style_update { id, kind?, caption? }` | Corrige la nature d'un style (`auto` la remet automatique) ou sa légende (§ 3.4). |
 | `style_delete { id \| all }` | Supprime un style, ou toute la base avec `all: true` (à la demande de l'utilisateur). |
 | `magic_fill_requests { wait, recent }` | Demandes ouvertes : consigne, région (tuiles, emprise, chemins, scénerie déjà là, terrain), voisinage (anneau de 4 tuiles : objets, densité, chemins, attractions) et styles candidats classés selon la consigne. `wait` attend une nouvelle demande (jusqu'à 600 s). Passe la demande à `working` dans la fenêtre du jeu. Tant qu'une demande est ouverte, le relief est modifiable dans son emprise (`target.bbox`) sans `session_set_landscape`. |
-| `magic_fill_apply { request \| tiles \| rect, styles: [{ id, weight }], relief, … }` | Remplit (voir § 4). `relief: "copy"` (défaut) recopie collines, creux et falaises du style par-dessus le terrain, adoucis vers le bord de la région ; `"keep"` garde le terrain. `texture: "copy"` (défaut) recopie surface et bordure de chaque tuile du style ; `"keep"` les garde. `reliefScale` multiplie la hauteur du relief recopié (2 : collines deux fois plus hautes). `dryRun` compte sans poser. Annulable par `undo_last` (relief compris). Avec `request` : checkpoint automatique avant le premier remplissage ; une demande déjà remplie est refusée sans `redo: true`, qui revient à ce checkpoint puis remplit. |
+| `magic_fill_apply { request \| tiles \| rect, styles: [{ id, weight }], blocks?, relief, … }` | Remplit (voir § 4). `blocks` pose des constructions à une place donnée (§ 3.4) ; sans région, la région est l'emprise des blocs. `relief: "copy"` (défaut) recopie collines, creux et falaises du style par-dessus le terrain, adoucis vers le bord de la région ; `"keep"` garde le terrain. `texture: "copy"` (défaut) recopie surface et bordure de chaque tuile du style ; `"keep"` les garde. `reliefScale` multiplie la hauteur du relief recopié (2 : collines deux fois plus hautes). `dryRun` compte sans poser. Annulable par `undo_last` (relief compris). Avec `request` : checkpoint automatique avant le premier remplissage ; une demande déjà remplie est refusée sans `redo: true`, qui revient à ce checkpoint puis remplit. |
 | `magic_fill_dismiss { request, reason }` | Ferme une demande ; la raison s'affiche en jeu. |
 | `magic_fill_revert { request, reopen, discardLaterWork }` | Ramène le parc au checkpoint pris juste avant le premier remplissage de la demande (relief, textures, scénerie d'origine) et la rouvre. Refuse si d'autres opérations journalisées ont suivi, sauf `discardLaterWork: true` (accord de l'utilisateur). |
 
@@ -148,6 +150,29 @@ Correction :
 - Résultat : `buildings { stamps, misses }`. Avertissements : aucun bâtiment posé faute de place ; consigne qui demande des bâtiments (city, town, building, tower, ville, immeuble…) sans aucun style qui en contienne ; bâtiments non construits quand le relief est verrouillé.
 - Masque (`columnsOf`) : chaque colonne descend jusqu'au sol de sa voisine la plus basse dans le style. Les captures déjà enregistrées gardent l'ancien masque : il faut annoter le style de nouveau pour le corriger.
 
+### 3.4 Constructions en blocs rigides [DÉCISION, 12 octobre 2026]
+
+Constat du 12 octobre : consigne « A castle, with many castle towers, interconnected by castle walls, on top of a hill with trees, and a small river at the bottom of the hill » sur 2 500 tuiles. Claude (Haiku) a bien choisi : « castle tower » (poids 3), « castle wall » (2), « small hill with trees » (2). Résultat : tours et pans de mur épars, des pièces flottantes. Ce n'était pas une erreur du modèle :
+
+1. Le tamponnage au hasard ne relie rien : il fait des forêts, pas des enceintes.
+2. Ces styles sont presque entièrement en l'air (tour : 257 éléments sur 281 au-dessus du sol, jusqu'à 22 marches ; mur : 96 sur 128). Chaque élément gardait l'écart au sol de **sa** tuile : sous la colline recopiée, les étages d'une même tour glissaient les uns par rapport aux autres.
+3. Un tampon coupé (bord de la région, rivière, autre tampon) gardait les pièces hautes sans leurs appuis ; les grandes scénerie incomplètes étaient écartées, d'autres orphelines en plus.
+
+Correction :
+
+- **Nature d'un style** (`styleKind`, `styles/structure.ts`) : `structure` si c'est un bâtiment en terrain (§ 3.3) ou si au moins 6 éléments et 30 % de la scénerie sont surélevés (écart ≥ 2 sur tuile plate, ≥ 3 sur pente) ; sinon `natural`. Le choix de l'utilisateur l'emporte : liste **Kind** du Style Picker, `style_save { kind }`, `style_update { id, kind }`. Sur les styles du 12 octobre : tour et mur `structure`, collines et rivière `natural`, gratte-ciel `structure`. Le résumé (`style_list`, `style_get`, candidats) donne `kind`.
+- **Bloc rigide** (`planners/magicFill.ts`) : une construction n'est tamponnée qu'entière (comme les bâtiments en terrain), et :
+  - un niveau de base pour tout le bloc : la moyenne des coins du terrain sous son emprise, ou `level` ;
+  - relief (`relief: "copy"`) : le sol du bloc est nivelé sur cette base, son relief propre recopié tel quel, coins fixés ; le terrain voisin garde son niveau d'origine contre le bloc (le bord devient une falaise de terrasse, sans rampe ni oscillation du lissage) ;
+  - chaque élément est posé à une hauteur explicite : base × 2 + (baseHeight dans le style − point le plus bas du style × 2). Les étages restent alignés quelle que soit la pente ;
+  - `density` ne l'éclaircit pas (une pièce retirée laisserait flotter celles du dessus) ;
+  - relief verrouillé : le bloc reste rigide sur le terrain tel quel (enterré d'un côté, décollé de l'autre sur une pente) ; `structures.unlevelled` et un avertissement le disent.
+- **Blocs explicites** : `magic_fill_apply { blocks: [{ id, x, y, rotation, level?, crop? }] }`. `(x, y)` = coin (x, y minimaux) de l'emprise après rotation et découpe ; `crop { x1, y1, x2, y2 }` garde une partie du style (coordonnées du style, avant rotation) ; `level` fixe la base (le même pour des pièces qui se raccordent). Les blocs sont posés avant la rivière et le tirage au hasard ; un bloc qui ne tient pas est refusé avec la raison (hors de la région, chemin, eau, scénerie gardée avec `occupied: "skip"`, autre bloc). Avec `occupied: "add"`, un bloc se pose par-dessus la scénerie existante (Zero Clearances) : c'est ainsi qu'on raccorde une construction déjà posée (prolonger un mur jusqu'au cœur d'une tour) ; le sol n'y est pas nivelé. Sans `request`, `tiles` ni `rect`, la région est l'emprise des blocs et `styles` peut être vide. Les grandes scénerie dont l'emprise sort de la découpe ne sont pas posées.
+- **Layout** (`style_get`) : hauteur du plus haut élément de chaque tuile (niveaux, base 36), rangée par rangée, et rangées identiques consécutives (`repeatingBands`) avec le `crop` d'une rangée à répéter. Mur du 12 octobre : rangées y = 2..3 identiques.
+- Résultat : `buildings` devient `structures { stamps, misses, blocks, unlevelled }`. Avertissements : blocs refusés ; plusieurs constructions tirées au hasard alors que la consigne parle de bâtiments (« elles ne sont pas reliées : place les pièces avec blocks »).
+
+Assembler un mur de château (largeur 4 comme la tour) : tour 4×4 au coin ; le mur part juste après la tour sans sa rangée d'extrémité y = 0 (la bordure de la tour en tient lieu) : `crop` y = 1 (extrémité), puis N × `crop` y = 2 (rangée répétable), puis `crop` y = 4, puis la tour suivante ; tous au même `level`, ou en marches sur une colline. Un mode « enceinte » (contour → tours et murs posés par le serveur) reste à faire.
+
 ---
 
 ## 4. Remplissage (`planners/magicFill.ts`)
@@ -159,6 +184,7 @@ Claude **compose** (styles, poids, densité, graine), un planificateur détermin
 3. Chaque élément garde son objet, ses couleurs, son quadrant et sa direction (plus la rotation du patch : même règle que les designs, `TrackDesign.cpp`). Les vides du style restent vides : la densité du style est conservée ; `density` < 1 éclaircit.
 4. Hauteurs : un objet posé au sol dans le style est posé au sol (hauteur automatique du jeu, qui suit pente et eau) ; un objet surélevé ou enterré garde son écart (`dz`) à la surface, ou à l'eau s'il flottait.
 5. Une grande scénerie n'est posée que si toute son emprise tombe dans des tuiles du même patch.
+5 bis. Constructions et blocs explicites : bloc rigide, un niveau de base, hauteurs explicites, sol nivelé, jamais éclairci (§ 3.4).
 6. Seules petite scénerie, grande scénerie et murs sont posés. Chemins, pistes, entrées et bannières du style sont comptés dans `notPlaced` (les attractions d'un style restent lisibles dans `style_get`, pour `ride_place`).
 
 Pose : les objets absents du parc sont chargés (`objects.load`) : un style relevé dans un autre parc s'applique tel quel. Si le parc n'a plus d'emplacement libre pour un type d'objet (limite d'`ObjectLimits.h` : 2 047 pour la scénerie et les murs ; `objects.load` répond `reason: "limit"`), une boîte d'avertissement s'ouvre en jeu (`ui.alert`), les éléments de ces objets sont écartés et le reste est posé ; la réponse porte `objectLimit { objects, discarded }` et l'état de la demande « N skipped (object limit) ». Ensuite, le cheat **Zero Clearances** (`disableClearanceChecks`) est activé le temps de la pose s'il ne l'était pas, puis rétabli, même en cas d'erreur. Les hauteurs exactes passent par le nouveau champ `baseHeight` des méthodes `scenery.place_*`. Le journal garde l'inverse de chaque élément posé (`smallsceneryremove`, `wallremove`, `largesceneryremove`) pour `undo_last`.

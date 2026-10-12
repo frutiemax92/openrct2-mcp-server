@@ -39,9 +39,22 @@
 // descendre en rampe vers un bord fixé. Un tel style n'est donc tamponné qu'entier, sur des tuiles libres, sèches et
 // remodelables ; sinon le tirage est écarté (et, si seuls des bâtiments ont été tirés, on retire parmi les autres
 // styles). Son relief est recopié à l'échelle 1 (reliefScale ne vaut que pour le relief naturel).
+//
+// Constructions (styles/structure.ts styleKind : bâtiment en terrain, ou objets empilés comme un château ; choix de
+// l'utilisateur prioritaire) : tamponnées comme les bâtiments, entières, et en BLOC RIGIDE. Constat du 12 octobre :
+// des tours et des murs de château tamponnés sur une colline flottaient. Chaque élément gardait son écart au sol de SA
+// tuile ; sur un terrain en pente les étages d'une même tour glissaient les uns par rapport aux autres, et un tampon
+// coupé gardait ses pièces hautes sans leurs appuis. Un bloc rigide a donc UN niveau de base (moyenne du terrain sous
+// son emprise, ou `level` donné) : son point le plus bas y tombe, son relief propre est recopié tel quel (sol nivelé,
+// coins fixés ; le terrain voisin descend vers eux de 1 niveau par arête), et chaque élément est posé à une hauteur
+// explicite, base + (hauteur dans le style − point le plus bas du style). density ne l'éclaircit pas.
+//
+// Blocs explicites (FillOptions.blocks) : un style posé à une position, une rotation et un niveau donnés, découpé au
+// besoin (crop, en coordonnées du style). Posés avant la rivière et les tampons tirés au hasard, ils servent à
+// assembler une grande construction à partir de pièces : tours aux coins, rangée de mur répétée entre elles.
 
 import { MAX_LEVEL, MIN_LEVEL, rotateOffset, type StyleElement, type StyleRecord, type TerrainHeightItem, type TileXY } from "@openrct2-claude/protocol";
-import { terrainStructure } from "../styles/structure.js";
+import { styleKind } from "../styles/structure.js";
 import { CORNERS, cornerLevels, tileFromCorners } from "./heightmap.js";
 
 export type FillType = "small_scenery" | "large_scenery" | "wall";
@@ -86,6 +99,32 @@ export interface FillOptions {
     water?: "copy" | "keep";
     /** Cours d'eau continu tracé avant le tamponnage (voir l'en-tête). */
     river?: FillRiver;
+    /** Blocs posés à une place donnée, avant tout le reste (voir l'en-tête). */
+    blocks?: FillBlock[];
+}
+
+export interface FillBlock {
+    record: StyleRecord;
+    /** Coin (x, y minimaux) de l'emprise du bloc sur la carte, après rotation et découpe. */
+    x: number;
+    y: number;
+    /** Quarts de tour (même règle que les patchs). */
+    rotation: number;
+    /** Niveau où tombe le point le plus bas du style ; absent : moyenne du terrain sous l'emprise. */
+    level?: number;
+    /** Part du style gardée, en coordonnées du style (avant rotation), bornes comprises. */
+    crop?: { x1: number; y1: number; x2: number; y2: number };
+}
+
+export interface FillBlockResult {
+    index: number;
+    style: string;
+    /** placed : tuiles du bloc et niveau retenu ; sinon la raison du refus. */
+    placed: boolean;
+    tiles: number;
+    level?: number;
+    bbox?: { x1: number; y1: number; x2: number; y2: number };
+    reason?: string;
 }
 
 export interface FillRiver {
@@ -158,8 +197,11 @@ export interface FillPlan {
     terrainBefore: TerrainHeightItem[];
     /** cliffs : bords de tuile en falaise après remodelage ; invalid : tuiles laissées telles quelles (forme impossible). */
     relief: { tiles: number; maxRise: number; cliffs: number; invalid: number };
-    /** Bâtiments en terrain : tampons posés entiers, et tirages écartés faute de place entière. */
-    buildings: { stamps: number; misses: number };
+    /**
+     * Constructions (bâtiments en terrain, objets empilés) : tampons posés entiers en bloc rigide, tirages écartés
+     * faute de place entière, blocs explicites et leur sort, et blocs posés sans terrain nivelé (relief: keep).
+     */
+    structures: { stamps: number; misses: number; blocks: FillBlockResult[]; unlevelled: number };
     /** Textures recopiées (texture: "copy"), et l'état d'avant. */
     textures: FillTexture[];
     texturesBefore: FillTexture[];
@@ -195,11 +237,34 @@ interface Prepared {
     byTile: Map<string, StyleElement[]>;
     large: { origin: { dx: number; dy: number; baseHeight: number }; object: string; direction: number; colours: [number, number, number]; footprint: [number, number][] }[];
     record: StyleRecord;
-    /** Bâtiment en terrain (terrainStructure) : tamponné entier ou pas du tout, à l'échelle 1. */
+    /** Construction (styleKind) : tamponnée entière ou pas du tout, en bloc rigide (voir l'en-tête). */
     atomic: boolean;
 }
 
 const key = (x: number, y: number) => `${x},${y}`;
+
+function cropTiles(tiles: [number, number][], crop: FillBlock["crop"]): [number, number][] {
+    if (!crop) return tiles;
+    const [x1, x2] = [Math.min(crop.x1, crop.x2), Math.max(crop.x1, crop.x2)];
+    const [y1, y2] = [Math.min(crop.y1, crop.y2), Math.max(crop.y1, crop.y2)];
+    return tiles.filter(([x, y]) => x >= x1 && x <= x2 && y >= y1 && y <= y2);
+}
+
+/** Bloc découpé : seules les tuiles de `crop` restent ; vmin reste celui du style entier (même base pour toutes les découpes). */
+function cropPrepared(s: Prepared, crop: FillBlock["crop"]): Prepared {
+    return crop ? { ...s, tiles: cropTiles(s.tiles, crop) } : s;
+}
+
+/** Tuile de carte de chaque tuile (découpée) du style d'un bloc : emprise tournée, son coin (x, y minimaux) en (x, y). */
+export function blockFootprint(b: Pick<FillBlock, "record" | "x" | "y" | "rotation" | "crop">): { q: [number, number]; at: TileXY }[] {
+    const tiles = cropTiles(b.record.tiles, b.crop);
+    if (tiles.length === 0) return [];
+    const k = ((b.rotation % 4) + 4) % 4;
+    const rot = tiles.map((q) => rotateOffset({ x: q[0], y: q[1] }, k));
+    const mx = Math.min(...rot.map((o) => o.x));
+    const my = Math.min(...rot.map((o) => o.y));
+    return tiles.map((q, n) => ({ q, at: { x: b.x + rot[n].x - mx, y: b.y + rot[n].y - my } }));
+}
 
 function prepare(src: FillSource, notPlaced: Record<string, number>): Prepared {
     const r = src.record;
@@ -245,7 +310,7 @@ function prepare(src: FillSource, notPlaced: Record<string, number>): Prepared {
             notPlaced[e.t] = (notPlaced[e.t] ?? 0) + 1;
         }
     }
-    const atomic = terrainStructure(r)?.kind === "building";
+    const atomic = styleKind(r).kind === "structure";
     return { id: r.id, weight: Math.max(0, src.weight), tiles: r.tiles, water, surface, corners, vmin, byTile, large: [...large.values()], record: r, atomic };
 }
 
@@ -294,6 +359,12 @@ function copyRelief(
     const pin: boolean[][] = [];
     const stampOf: number[] = [];
     const byVertex = new Map<string, [number, number][]>();
+    const rigidTile = new Set(
+        shapeable.filter((tk) => {
+            const st = stamps[assigned.get(tk)!.stamp];
+            return st.rigid && st.level !== undefined;
+        }),
+    );
     for (let n = 0; n < N; n++) {
         const t = tgt.get(shapeable[n])!;
         const a = assigned.get(shapeable[n])!;
@@ -313,9 +384,19 @@ function copyRelief(
             const j = CORNERS.findIndex((q) => q.dx === vx && q.dy === vy);
             const v = qc && j >= 0 ? qc[j] : undefined;
             sc[n][i] = v;
-            // Coin touchant une tuile non remodelée (bord, chemin, eau, scénerie gardée) : fixé.
-            pin[n][i] = !CORNERS.every((q) => index.has(key(T.x - q.dx, T.y - q.dy)));
-            c[n][i] = pin[n][i] || v === undefined ? ex[n][i] : ex[n][i] + Math.round((v - st.s.vmin) * (st.s.atomic ? 1 : scale));
+            if (rigidTile.has(shapeable[n]) && v !== undefined) {
+                // Bloc rigide : sol nivelé sur sa base, son relief propre tel quel, coins fixés.
+                pin[n][i] = true;
+                c[n][i] = st.level! + (v - st.s.vmin);
+            } else {
+                // Coin touchant une tuile non remodelée (bord, chemin, eau, scénerie gardée) ou un bloc rigide : fixé
+                // au sol d'origine. Le bord du bloc devient une falaise de terrasse, sans rampe qui monterait vers lui.
+                pin[n][i] = !CORNERS.every((q) => {
+                    const nk = key(T.x - q.dx, T.y - q.dy);
+                    return index.has(nk) && !rigidTile.has(nk);
+                });
+                c[n][i] = pin[n][i] || v === undefined ? ex[n][i] : ex[n][i] + Math.round((v - st.s.vmin) * scale);
+            }
             const vk = key(T.x, T.y);
             const list = byVertex.get(vk) ?? [];
             list.push([n, i]);
@@ -331,6 +412,8 @@ function copyRelief(
                 const [b, j] = list[y];
                 if (ex[a][i] !== ex[b][j]) continue;
                 if (stampOf[a] === stampOf[b] && sc[a][i] !== sc[b][j]) continue;
+                // Bloc rigide : ses coins sont fixés, ceux du voisin aussi (sol d'origine) : rien à coller.
+                if (rigidTile.has(shapeable[a]) || rigidTile.has(shapeable[b])) continue;
                 glue.push([a, i, b, j]);
             }
     const limit = 4 * Math.ceil(Math.sqrt(N)) + 64;
@@ -416,6 +499,9 @@ interface Stamp {
     k: number;
     /** Sol d'origine (coin le plus bas, en niveaux) de la tuile d'ancrage : référence de l'eau recopiée. */
     ground: number;
+    /** Bloc rigide (construction, ou bloc explicite) : niveau où tombe le point le plus bas du style (vmin). */
+    level?: number;
+    rigid: boolean;
 }
 
 /** Zigzag de bord à bord le long du grand axe des tuiles cibles, prolongé d'une tuile au-delà. */
@@ -559,7 +645,7 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
         terrain: [],
         terrainBefore: [],
         relief: { tiles: 0, maxRise: 0, cliffs: 0, invalid: 0 },
-        buildings: { stamps: 0, misses: 0 },
+        structures: { stamps: 0, misses: 0, blocks: [], unlevelled: 0 },
         textures: [],
         texturesBefore: [],
         water: [],
@@ -567,7 +653,8 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
         notPlaced,
         objects: [],
     };
-    if (styles.length === 0) return plan;
+    const blocks = opts.blocks ?? [];
+    if (styles.length === 0 && blocks.length === 0) return plan;
     const rnd = mulberry32(opts.seed);
     const tgt = new Map<string, FillTargetTile>();
     const free = new Set<string>();
@@ -587,34 +674,92 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
     }
     const isWater = (t: FillTargetTile) => t.water > t.baseHeight;
     const ground = new Map([...tgt].map(([tk, t]) => [tk, cornerLevels({ h: t.baseHeight / 2, s: t.slope })]));
-    const river = opts.river ? carveRiver(plan, tgt, free, opts.river, rnd) : new Map<string, number>();
     // Eau du style sur une tuile sèche : permise si elle y sera remise en eau (water: copy, sans rivière).
     const copyWater = opts.water === "copy" && !opts.river;
     const fits = (styleWater: boolean, t: FillTargetTile) => !opts.matchWater || styleWater === isWater(t) || (copyWater && styleWater);
     // Tuile cible → (style, tuile du style, rotation, tampon).
     const assigned = new Map<string, { s: Prepared; q: [number, number]; k: number; stamp: number }>();
     const stamps: Stamp[] = [];
-    const order = [...free];
-    for (let i = order.length - 1; i > 0; i--) {
-        const j = Math.floor(rnd() * (i + 1));
-        [order[i], order[j]] = [order[j], order[i]];
-    }
+    let river = new Map<string, number>();
     const mapTile = (p: [number, number], u: TileXY, k: number, q: [number, number]): TileXY => {
         const o = rotateOffset({ x: q[0] - p[0], y: q[1] - p[1] }, k);
         return { x: u.x + o.x, y: u.y + o.y };
+    };
+    /** Pourquoi une tuile du style ne peut pas recevoir un tampon entier (null : elle peut). */
+    const unfit = (s: Prepared, q: [number, number], tk: string): string | null => {
+        const t = tgt.get(tk);
+        if (!t) return "hors de la région";
+        if (assigned.has(tk)) return "déjà prise par un autre bloc";
+        if (river.has(tk)) return "rivière";
+        if (t.blocked) return "chemin, piste ou entrée";
+        // add : posé par-dessus (raccord d'une construction déjà posée) ; le sol n'y est pas nivelé (copyRelief).
+        if (t.occupied && opts.occupied === "skip") return "scénerie déjà là (occupied: 'add' pour poser par-dessus, 'replace' pour la remplacer)";
+        if (!free.has(tk)) return "tuile écartée";
+        const styleWater = s.water.get(key(q[0], q[1])) ?? false;
+        if (!fits(styleWater, t) || (!styleWater && isWater(t))) return "eau";
+        return null;
     };
     /** Toutes les tuiles du style tombent sur des tuiles libres, d'accord pour l'eau, et remodelables (voir copyRelief). */
     const wholeFits = (s: Prepared, p: [number, number], k: number, u: TileXY): boolean =>
         s.tiles.every((q) => {
             const m = mapTile(p, u, k, q);
-            const tk = key(m.x, m.y);
-            const t = tgt.get(tk);
-            if (!t || !free.has(tk) || assigned.has(tk) || river.has(tk)) return false;
-            const styleWater = s.water.get(key(q[0], q[1])) ?? false;
-            if (!fits(styleWater, t) || (!styleWater && isWater(t))) return false;
-            return !t.blocked && !(t.occupied && opts.occupied !== "replace");
+            return unfit(s, q, key(m.x, m.y)) === null;
         });
-    for (const uk of order) {
+    const claim = (s: Prepared, p: [number, number], u: TileXY, k: number, rigid: boolean, level?: number): number => {
+        const stamp = stamps.length;
+        stamps.push({ s, p, u, k, ground: Math.min(...cornerLevels({ h: (tgt.get(key(u.x, u.y))?.baseHeight ?? 2) / 2, s: tgt.get(key(u.x, u.y))?.slope ?? 0 })), rigid, level });
+        for (const q of s.tiles) {
+            const t = mapTile(p, u, k, q);
+            const tk = key(t.x, t.y);
+            if (!free.has(tk) || assigned.has(tk)) continue;
+            if (!fits(s.water.get(key(q[0], q[1])) ?? false, tgt.get(tk)!)) continue;
+            assigned.set(tk, { s, q, k, stamp });
+        }
+        return stamp;
+    };
+
+    // Blocs explicites d'abord : ils ont la place qu'on leur donne, ou sont refusés avec la raison.
+    const preparedById = new Map(styles.map((s) => [s.id, s]));
+    const blockStamp = new Map<FillBlockResult, number>();
+    blocks.forEach((b, index) => {
+        let full = preparedById.get(b.record.id);
+        if (!full) {
+            full = prepare({ record: b.record, weight: 0 }, notPlaced);
+            preparedById.set(full.id, full);
+        }
+        const s = cropPrepared(full, b.crop);
+        const k = ((b.rotation % 4) + 4) % 4;
+        const res: FillBlockResult = { index, style: full.id, placed: false, tiles: s.tiles.length };
+        plan.structures.blocks.push(res);
+        if (s.tiles.length === 0) {
+            res.reason = "découpe vide (crop hors du style)";
+            return;
+        }
+        // Emprise tournée ; son coin (x, y minimaux) tombe sur (b.x, b.y) : u = où tombe la tuile (0, 0) du style.
+        const foot = blockFootprint({ ...b, record: full.record }).map((f) => f.at);
+        const r0 = rotateOffset({ x: s.tiles[0][0], y: s.tiles[0][1] }, k);
+        const u = { x: foot[0].x - r0.x, y: foot[0].y - r0.y };
+        for (const [n, q] of s.tiles.entries()) {
+            const why = unfit(s, q, key(foot[n].x, foot[n].y));
+            if (why) {
+                res.reason = `tuile (${foot[n].x}, ${foot[n].y}) : ${why}`;
+                return;
+            }
+        }
+        blockStamp.set(res, claim(s, [0, 0], u, k, true, b.level));
+        res.placed = true;
+        res.bbox = { x1: Math.min(...foot.map((t) => t.x)), y1: Math.min(...foot.map((t) => t.y)), x2: Math.max(...foot.map((t) => t.x)), y2: Math.max(...foot.map((t) => t.y)) };
+        plan.stamps[full.id] = (plan.stamps[full.id] ?? 0) + 1;
+    });
+
+    if (opts.river) river = carveRiver(plan, tgt, new Set([...free].filter((tk) => !assigned.has(tk))), opts.river, rnd);
+    const order = [...free];
+    for (let i = order.length - 1; i > 0; i--) {
+        const j = Math.floor(rnd() * (i + 1));
+        [order[i], order[j]] = [order[j], order[i]];
+    }
+    // Sans style à tirer (blocs seuls), le reste de la région ne change pas.
+    for (const uk of styles.length ? order : []) {
         if (assigned.has(uk) || !free.has(uk)) continue;
         const u = tgt.get(uk)!;
         // Parmi quelques tirages valides, celui qui couvre le plus de tuiles libres (patch le moins coupé).
@@ -630,10 +775,10 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
                 continue;
             }
             const k = opts.rotate ? Math.floor(rnd() * 4) : 0;
-            // Bâtiment : entier, sinon tirage écarté ; si seuls des bâtiments sortent, on retire parmi les autres styles.
+            // Construction : entière, sinon tirage écarté ; si seules des constructions sortent, on retire parmi les autres styles.
             if (s.atomic) {
                 if (!wholeFits(s, p, k, u)) {
-                    plan.buildings.misses++;
+                    plan.structures.misses++;
                     if (attempt >= 5 && !chosen) {
                         const rest = styles.filter((x) => !x.atomic);
                         if (rest.length && pool !== rest) pool = rest;
@@ -657,23 +802,36 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
             }
         }
         if (!chosen) {
-            // Sinon : seuls des bâtiments sans place entière ont été tirés ; la tuile reste vide (tiles.empty).
+            // Sinon : seules des constructions sans place entière ont été tirées ; la tuile reste vide (tiles.empty).
             if (waterRejected) plan.tiles.waterMismatch++;
             free.delete(uk);
             continue;
         }
-        const stamp = stamps.length;
-        stamps.push({ s: chosen.s, p: chosen.p, u, k: chosen.k, ground: Math.min(...cornerLevels({ h: u.baseHeight / 2, s: u.slope })) });
+        claim(chosen.s, chosen.p, u, chosen.k, chosen.s.atomic);
         plan.stamps[chosen.s.id] = (plan.stamps[chosen.s.id] ?? 0) + 1;
-        if (chosen.s.atomic) plan.buildings.stamps++;
-        for (const q of chosen.s.tiles) {
-            const t = mapTile(chosen.p, u, chosen.k, q);
-            const tk = key(t.x, t.y);
-            if (!free.has(tk) || assigned.has(tk)) continue;
-            if (!fits(chosen.s.water.get(key(q[0], q[1])) ?? false, tgt.get(tk)!)) continue;
-            assigned.set(tk, { s: chosen.s, q, k: chosen.k, stamp });
-        }
+        if (chosen.s.atomic) plan.structures.stamps++;
     }
+    // Blocs rigides sans niveau donné : moyenne des coins du terrain sous l'emprise (avant tout remodelage, rivière
+    // comprise : un bloc n'est jamais posé sur la rivière). Leur sol d'eau recopiée part de ce niveau.
+    const footprint = new Map<number, string[]>();
+    for (const [tk, a] of assigned) {
+        if (!stamps[a.stamp].rigid) continue;
+        const list = footprint.get(a.stamp) ?? [];
+        list.push(tk);
+        footprint.set(a.stamp, list);
+    }
+    for (const [index, tks] of footprint) {
+        const st = stamps[index];
+        if (st.level === undefined) {
+            const corners = tks.flatMap((tk) => cornerLevels({ h: tgt.get(tk)!.baseHeight / 2, s: tgt.get(tk)!.slope }));
+            st.level = Math.round(corners.reduce((n, v) => n + v, 0) / corners.length);
+        }
+        const top = Math.max(...st.s.tiles.map((q) => Math.max(...(st.s.corners.get(key(q[0], q[1])) ?? [st.s.vmin])))) - st.s.vmin;
+        st.level = Math.max(MIN_LEVEL, Math.min(MAX_LEVEL - top, st.level));
+        st.ground = st.level;
+        if (opts.relief !== "copy") plan.structures.unlevelled++;
+    }
+    for (const [res, index] of blockStamp) res.level = stamps[index].level;
     if (opts.relief === "copy") copyRelief(plan, tgt, assigned, stamps, opts);
     // Eau : rivière, puis eau des styles tombée sur des tuiles sèches ; confinée sur le terrain remodelé.
     const want = new Map(river);
@@ -683,7 +841,7 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
             const t = tgt.get(tk)!;
             const qs = a.s.surface.get(key(a.q[0], a.q[1]));
             if (!qs || qs.water <= qs.baseHeight || isWater(t)) continue;
-            const level = stamps[a.stamp].ground + Math.round((qs.water / 2 - a.s.vmin) * scale);
+            const level = stamps[a.stamp].ground + Math.round((qs.water / 2 - a.s.vmin) * (stamps[a.stamp].rigid ? 1 : scale));
             want.set(tk, Math.max(MIN_LEVEL + 1, Math.min(MAX_LEVEL, level)));
         }
     }
@@ -720,6 +878,19 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
         let placedHere = 0;
         for (const e of elements) {
             if (!e.object || !include.has(e.t as FillType)) continue;
+            const st = stamps[a.stamp];
+            const colours = (e.colours ?? [0, 0, 0]) as [number, number, number];
+            if (st.rigid) {
+                // Bloc rigide : jamais éclairci (une pièce retirée laisserait flotter celles du dessus), hauteur explicite
+                // depuis la base du bloc, la même pour toutes ses tuiles.
+                const baseHeight = clampBH(st.level! * 2 + (e.baseHeight - st.s.vmin * 2));
+                if (e.t === "small_scenery")
+                    plan.small.push({ object: e.object, x: t.x, y: t.y, baseHeight, quadrant: ((e.quadrant ?? 0) + a.k) & 3, direction: ((e.direction ?? 0) + a.k) & 3, colours, style: a.s.id });
+                else plan.walls.push({ object: e.object, x: t.x, y: t.y, baseHeight, edge: ((e.direction ?? 0) + a.k) & 3, colours, style: a.s.id });
+                objects.add(e.object);
+                placedHere++;
+                continue;
+            }
             if (rnd() >= opts.density) continue;
             const onWater = !!qs && qs.water > qs.baseHeight && e.baseHeight >= qs.water;
             const ref = qs ? (onWater ? qs.water : qs.baseHeight) : e.baseHeight - e.dz;
@@ -732,7 +903,6 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
             const submerged = !onWater && !!qs && qs.water > qs.baseHeight && isWater(t);
             let baseHeight = ground && !submerged ? null : clampBH(tgtRef + (ground ? 0 : rel));
             if (submerged) baseHeight = clampBH(Math.max(t.baseHeight + Math.min(0, rel), Math.min(baseHeight!, t.water - (e.clearanceHeight - e.baseHeight))));
-            const colours = (e.colours ?? [0, 0, 0]) as [number, number, number];
             if (e.t === "small_scenery") {
                 plan.small.push({ object: e.object, x: t.x, y: t.y, baseHeight, quadrant: ((e.quadrant ?? 0) + a.k) & 3, direction: ((e.direction ?? 0) + a.k) & 3, colours, style: a.s.id });
             } else {
@@ -762,8 +932,13 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
                     // Hors de ce tampon : comptée une fois par tampon dont l'origine tombe dans la région.
                     continue;
                 }
-                if (rnd() >= opts.density) continue;
                 const origin = mapTile(st.p, st.u, st.k, [g.origin.dx, g.origin.dy]);
+                if (st.rigid) {
+                    plan.large.push({ object: g.object, x: origin.x, y: origin.y, baseHeight: clampBH(st.level! * 2 + (g.origin.baseHeight - st.s.vmin * 2)), direction: (g.direction + st.k) & 3, colours: g.colours, style: st.s.id });
+                    objects.add(g.object);
+                    continue;
+                }
+                if (rnd() >= opts.density) continue;
                 const styleRef = Math.max(
                     ...g.footprint.map(([fx, fy]) => st.s.surface.get(key(g.origin.dx + fx, g.origin.dy + fy))?.baseHeight ?? -Infinity),
                 );

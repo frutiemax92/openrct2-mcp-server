@@ -7,9 +7,10 @@ import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { World } from "@openrct2-claude/fake-plugin";
 import type { MagicFillRequest, StyleElement, StyleRecord } from "@openrct2-claude/protocol";
 import { cornerLevels, tileFromCorners } from "../src/planners/heightmap.js";
-import { planMagicFill, type FillOptions, type FillTargetTile } from "../src/planners/magicFill.js";
+import { blockFootprint, planMagicFill, type FillOptions, type FillTargetTile } from "../src/planners/magicFill.js";
 import { regionMask } from "../src/render/mask.js";
 import { columnsOf, relevance, summarize } from "../src/styles/store.js";
+import { repeatingBands, styleKind } from "../src/styles/structure.js";
 import { startHarness, type Harness } from "./harness.js";
 
 const OPTS: FillOptions = { seed: 1, density: 1, rotate: false, occupied: "skip", avoidPaths: true, include: ["small_scenery", "large_scenery", "wall"], matchWater: true };
@@ -312,12 +313,12 @@ describe("planificateur Magic Fill", () => {
                 texture: "copy",
                 reliefScale: 2,
             });
-            expect(plan.buildings.stamps).toBeGreaterThan(0);
+            expect(plan.structures.stamps).toBeGreaterThan(0);
             expect(plan.relief.invalid).toBe(0);
             // Sol cible au niveau 10 ; tours à 10 + 16. Rien entre les deux : ni colline ni rampe autour d'une tour coupée.
             for (const a of plan.terrain) expect([10, 26]).toContain(a.level);
             const tops = plan.terrain.filter((a) => a.level === 26);
-            expect(tops.length).toBe(plan.buildings.stamps * 4);
+            expect(tops.length).toBe(plan.structures.stamps * 4);
             const top = new Set(tops.map((a) => `${a.x},${a.y}`));
             for (const a of tops) {
                 const n = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => top.has(`${a.x + dx},${a.y + dy}`)).length;
@@ -325,6 +326,114 @@ describe("planificateur Magic Fill", () => {
             }
             expect(plan.textures.some((x) => x.edge === "rct1ll.terrain_edge.skyscraper_b")).toBe(true);
         }
+    });
+
+    it("construction en objets empilés : posée en bloc rigide sur une pente, un seul niveau, sol nivelé, jamais éclaircie", () => {
+        // Tour 3×3 : chaque tuile porte une pile de 5 pièces (écarts 0, 2, 4, 6, 8) sur un sol plat au niveau 7.
+        const piles: Partial<StyleElement>[] = [];
+        for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 3; dx++) for (const dz of [0, 2, 4, 6, 8]) piles.push({ object: "block", dx, dy, dz, baseHeight: 14 + dz, clearanceHeight: 16 + dz });
+        const towerStyle = style("castle-tower", 3, 3, piles);
+        expect(styleKind(towerStyle)).toMatchObject({ kind: "structure", source: "auto" });
+        // Terrain en escalier : +1 niveau par tuile le long de x (niveaux 10, 11, 12).
+        const t = target(3, 3).map((x) => ({ ...x, baseHeight: 20 + 2 * (x.x - 50) }));
+        const plan = planMagicFill(t, [{ record: towerStyle, weight: 1 }], { ...OPTS, relief: "copy", density: 0.2 });
+        expect(plan.structures.stamps).toBe(1);
+        expect(plan.small).toHaveLength(45);
+        // Niveau = moyenne des coins (10, 11, 12 → 11) ; tout le sol du bloc à 11, chaque pile au même niveau.
+        for (const a of plan.terrain) expect([a.level, a.slope]).toEqual([11, 0]);
+        expect(plan.terrain).toHaveLength(2 * 3);
+        for (const s of plan.small) expect([22, 24, 26, 28, 30]).toContain(s.baseHeight);
+        const perTile = new Map<string, number[]>();
+        for (const s of plan.small) perTile.set(`${s.x},${s.y}`, [...(perTile.get(`${s.x},${s.y}`) ?? []), s.baseHeight!]);
+        for (const hs of perTile.values()) expect(hs.sort()).toEqual([22, 24, 26, 28, 30]);
+        // Relief verrouillé : même bloc rigide, terrain intact, compté comme non nivelé.
+        const keep = planMagicFill(t, [{ record: towerStyle, weight: 1 }], { ...OPTS, relief: "keep" });
+        expect(keep.terrain).toHaveLength(0);
+        expect(keep.structures.unlevelled).toBe(1);
+        for (const s of keep.small) expect([22, 24, 26, 28, 30]).toContain(s.baseHeight);
+    });
+
+    it("nature d'un style : forêt au sol = nature, choix de l'utilisateur prioritaire", () => {
+        const forest = style("forest", 3, 3, [{ object: "pine" }, { object: "pine", dx: 1, dy: 2 }, { object: "nest", dx: 1, dy: 2, dz: 10, baseHeight: 24 }]);
+        expect(styleKind(forest).kind).toBe("natural");
+        expect(styleKind({ ...forest, kind: "structure" })).toMatchObject({ kind: "structure", source: "user" });
+        const plan = planMagicFill(target(6, 6), [{ record: { ...forest, kind: "structure" }, weight: 1 }], { ...OPTS, rotate: true });
+        expect(plan.structures.stamps).toBeGreaterThan(0);
+        // Tamponnée entière seulement : chaque tampon pose ses 3 éléments, jamais un patch coupé.
+        expect(plan.small).toHaveLength(plan.structures.stamps * 3);
+    });
+
+    /** Mur de château 2×4 relevé le long de y : extrémité (y = 0), rangées répétables (y = 1, 2), extrémité (y = 3). */
+    function castleWall(): StyleRecord {
+        const els: Partial<StyleElement>[] = [];
+        for (let dx = 0; dx < 2; dx++) {
+            for (const dz of [0, 2, 4, 6]) {
+                els.push({ object: "post", dx, dy: 0, dz, baseHeight: 14 + dz });
+                els.push({ object: "post", dx, dy: 3, dz, baseHeight: 14 + dz });
+            }
+            for (const dy of [1, 2]) for (const dz of [0, 2, 4]) els.push({ t: "wall", object: "stone", dx, dy, dz, baseHeight: 14 + dz, direction: dx === 0 ? 0 : 2 });
+        }
+        return style("castle-wall", 2, 4, els);
+    }
+
+    it("blocs explicites : un mur allongé à partir de ses rangées (crop), au niveau donné, et tourné", () => {
+        const wall = castleWall();
+        expect(repeatingBands(wall)).toEqual(expect.arrayContaining([{ axis: "y", from: 1, to: 2 }]));
+        // Mur de 7 tuiles le long de y : extrémité, 5 × rangée répétée, extrémité ; tous au niveau 12.
+        const blocks = [
+            { record: wall, x: 50, y: 60, rotation: 0, level: 12, crop: { x1: 0, y1: 0, x2: 1, y2: 0 } },
+            ...[1, 2, 3, 4, 5].map((n) => ({ record: wall, x: 50, y: 60 + n, rotation: 0, level: 12, crop: { x1: 0, y1: 1, x2: 1, y2: 1 } })),
+            { record: wall, x: 50, y: 66, rotation: 0, level: 12, crop: { x1: 0, y1: 3, x2: 1, y2: 3 } },
+        ];
+        const plan = planMagicFill(target(6, 8), [], { ...OPTS, relief: "copy", blocks });
+        expect(plan.structures.blocks.every((b) => b.placed && b.level === 12)).toBe(true);
+        expect(plan.small.filter((s) => s.object === "post")).toHaveLength(16);
+        expect(plan.walls).toHaveLength(5 * 2 * 3);
+        for (const w of plan.walls) expect([24, 26, 28]).toContain(w.baseHeight);
+        expect(new Set(plan.walls.map((w) => w.y))).toEqual(new Set([61, 62, 63, 64, 65]));
+        // Le reste de la région ne bouge pas (pas de style à tirer) ; le sol du mur est nivelé au niveau 12.
+        expect(new Set(plan.terrain.map((a) => `${a.x},${a.y}`)).size).toBe(14);
+        for (const a of plan.terrain) expect(a.level).toBe(12);
+        // Rangée tournée d'un quart de tour : 1 × 2 le long de y, bords de mur tournés.
+        const turned = planMagicFill(target(6, 8), [], { ...OPTS, blocks: [{ record: wall, x: 53, y: 61, rotation: 1, crop: { x1: 0, y1: 1, x2: 1, y2: 1 } }] });
+        expect(turned.structures.blocks[0]).toMatchObject({ placed: true, bbox: { x1: 53, y1: 61, x2: 53, y2: 62 } });
+        expect(new Set(turned.walls.map((w) => w.edge))).toEqual(new Set([1, 3]));
+        expect(blockFootprint({ record: wall, x: 53, y: 61, rotation: 1, crop: { x1: 0, y1: 1, x2: 1, y2: 1 } }).map((f) => f.at)).toEqual(
+            expect.arrayContaining([{ x: 53, y: 61 }, { x: 53, y: 62 }]),
+        );
+    });
+
+    it("bloc refusé avec sa raison : chevauchement, hors de la région, chemin", () => {
+        const wall = castleWall();
+        const t = target(4, 4);
+        t[3 * 4 + 3].blocked = true;
+        const plan = planMagicFill(t, [], {
+            ...OPTS,
+            blocks: [
+                { record: wall, x: 50, y: 60, rotation: 0 },
+                { record: wall, x: 51, y: 60, rotation: 0 },
+                { record: wall, x: 52, y: 62, rotation: 0 },
+                { record: wall, x: 52, y: 60, rotation: 0, crop: { x1: 0, y1: 0, x2: 1, y2: 1 } },
+            ],
+        });
+        const [a, b, c, d] = plan.structures.blocks;
+        expect(a.placed).toBe(true);
+        expect(b.reason).toMatch(/déjà prise/);
+        expect(c.reason).toMatch(/hors de la région|chemin/);
+        expect(d.placed).toBe(true);
+    });
+
+    it("bloc sur une tuile déjà décorée : refusé en skip, posé par-dessus en add (raccord mur → tour)", () => {
+        const wall = castleWall();
+        const t = target(4, 4);
+        t[0].occupied = true;
+        const block = { record: wall, x: 50, y: 60, rotation: 0, crop: { x1: 0, y1: 1, x2: 1, y2: 1 } };
+        const skip = planMagicFill(t, [], { ...OPTS, blocks: [block] });
+        expect(skip.structures.blocks[0].reason).toMatch(/occupied: 'add'/);
+        const add = planMagicFill(target(4, 4).map((x, i) => (i === 0 ? { ...x, occupied: true } : x)), [], { ...OPTS, occupied: "add", blocks: [block] });
+        expect(add.structures.blocks[0].placed).toBe(true);
+        expect(add.clear).toHaveLength(0);
+        expect(add.walls.some((w) => w.x === 50 && w.y === 60)).toBe(true);
     });
 
     it("compte ce qu'il ne pose pas (chemins, pistes)", () => {
@@ -639,6 +748,54 @@ describe("Style Picker et Magic Fill de bout en bout (faux plugin)", () => {
         const all = await h.call("style_delete", { all: true });
         expect(all.isError).toBe(false);
         expect((await h.call("style_list", {})).json.styles).toHaveLength(0);
+    });
+
+    it("construction : blocs posés en jeu à un seul niveau sur une pente, sol nivelé, annulable ; style_update et layout", async () => {
+        const world = h.plugin.world;
+        // Mur 2×3 de piles de 3 pièces (écarts 0, 2, 4) : rangées y = 0..2 identiques.
+        const els: Partial<StyleElement>[] = [];
+        for (let dy = 0; dy < 3; dy++) for (let dx = 0; dx < 2; dx++) for (const dz of [0, 2, 4]) els.push({ object: "rct2.scenery_small.tcf", dx, dy, dz, baseHeight: 14 + dz });
+        h.plugin.pushInbox({ styles: [style("style-wall0001", 2, 3, els, { caption: "Castle wall" })] });
+        const listed = (await h.call("style_list", { query: "castle wall" })).json.styles[0];
+        expect(listed.kind).toMatch(/^structure/);
+        const sid = listed.id as string;
+        const layout = (await h.call("style_get", { id: sid, image: false })).json.layout;
+        expect(layout.heights).toHaveLength(3);
+        expect(layout.repeats.join(" ")).toMatch(/y=0\.\.2/);
+        // Pente : +1 niveau par tuile le long de y.
+        const tiles: [number, number][] = [];
+        for (let y = 30; y < 38; y++)
+            for (let x = 30; x < 34; x++) {
+                tiles.push([x, y]);
+                world.tile(x, y).h = 7 + (y - 30);
+            }
+        const before = tiles.map(([x, y]) => world.tile(x, y).h);
+        h.plugin.pushInbox({ fills: [{ id: "fill-castle", prompt: "a castle wall", tiles, brushSize: 4, createdAt: "2026-10-12T10:00:00Z", park: null }] });
+        await h.call("magic_fill_requests", { wait: 2 });
+        // Un mur de 6 tuiles : deux blocs entiers bout à bout, même niveau.
+        const r = await h.call("magic_fill_apply", {
+            request: "fill-castle",
+            compare: false,
+            blocks: [
+                { id: sid, x: 31, y: 31, level: 10 },
+                { id: sid, x: 31, y: 34, level: 10 },
+                { id: sid, x: 31, y: 33 },
+            ],
+        });
+        expect(r.isError).toBe(false);
+        expect(r.json.structures.blocks.map((b: { placed: boolean }) => b.placed)).toEqual([true, true, false]);
+        expect(r.json.warnings.join(" ")).toMatch(/1 bloc\(s\) sur 3 refusé/);
+        for (let y = 31; y <= 36; y++)
+            for (const x of [31, 32]) {
+                expect(world.tile(x, y).h).toBe(10);
+                expect(world.tile(x, y).small.map((s) => s.l).sort()).toEqual([10, 11, 12]);
+            }
+        await h.call("undo_last", { count: 1 });
+        expect(tiles.map(([x, y]) => world.tile(x, y).h)).toEqual(before);
+        expect(tiles.flatMap(([x, y]) => world.tile(x, y).small)).toHaveLength(0);
+        const upd = await h.call("style_update", { id: sid, kind: "natural" });
+        expect(upd.json.kind).toMatch(/^nature \(choix de l'utilisateur\)/);
+        expect((await h.call("style_update", { id: sid, kind: "auto" })).json.kind).toMatch(/^structure/);
     });
 
     it("style_save relève une région désignée par Claude", async () => {

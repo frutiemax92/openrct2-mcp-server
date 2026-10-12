@@ -12,12 +12,13 @@ import { CLEAR_ITEMS, STYLE_MAX_TILES, type BulkResult, type StyleRecord, type T
 import { z } from "zod";
 import { paths } from "../config.js";
 import { log } from "../log.js";
-import { planMagicFill, type FillPlan, type FillTargetTile, type FillType } from "../planners/magicFill.js";
+import { blockFootprint, planMagicFill, type FillBlock, type FillPlan, type FillTargetTile, type FillType } from "../planners/magicFill.js";
 import { contactSheet } from "../render/annotate.js";
 import { maskCapture } from "../render/mask.js";
 import type { InverseOp } from "../state/journal.js";
 import { FillQueue, InboxSync, type FillEntry } from "../styles/inbox.js";
 import { columnsOf, StyleStore, summarize, type StyleSummary } from "../styles/store.js";
+import { repeatingBands } from "../styles/structure.js";
 import { chunks } from "./helpers.js";
 import { BUDGET, defineTool, requireLandscape, result, toolError, zRectShape, zTile, type ToolContext } from "./context.js";
 import { checkpointExists, restoreCheckpoint, saveCheckpoint } from "./history.js";
@@ -27,14 +28,17 @@ const zTiles = z.array(zTile).max(STYLE_MAX_TILES);
 
 /** Consigne qui demande un cours d'eau (rivière tracée par défaut), ou de l'eau en général (contrôle du résultat). */
 const RIVER_WORDS = /\b(rivers?|streams?|creeks?|brooks?|canals?|rivi[eè]res?|ruisseaux?|fleuves?|torrents?|cours d'eau)\b/i;
-const BUILDING_WORDS = /\b(city|town|village|buildings?|skyscrapers?|towers?|houses?|ville|villages?|b[aâ]timents?|immeubles?|gratte-ciels?|tours?|maisons?)\b/i;
+const BUILDING_WORDS =
+    /\b(city|town|village|buildings?|skyscrapers?|towers?|houses?|castles?|forts?|fortress(es)?|ville|villages?|b[aâ]timents?|immeubles?|gratte-ciels?|tours?|maisons?|ch[aâ]teaux?|forteresses?)\b/i;
 const WATER_WORDS =/\b(water|lakes?|ponds?|pools?|eau|lacs?|[ée]tangs?|mares?|bassins?)\b/i;
 
-/** Le style contient des bâtiments : en terrain (structure) ou en objets (petite/grande scénerie, murs). */
+/** Le style contient des bâtiments : construction (en terrain ou en objets empilés), ou objets nommés comme tels. */
 function hasBuildings(r: StyleRecord): boolean {
-    if (summarize(r).structure?.kind === "building") return true;
+    if (summarize(r).kind.kind === "structure") return true;
     return r.elements.some((e) => e.object && e.t !== "footpath" && BUILDING_WORDS.test(r.objects[e.object]?.name ?? ""));
 }
+
+const zKind = z.enum(["auto", "structure", "natural"]);
 
 function compact(s: StyleSummary) {
     return {
@@ -50,9 +54,45 @@ function compact(s: StyleSummary) {
         structure: s.structure
             ? `${s.structure.kind === "building" ? "bâtiment en terrain" : "falaise"} : ${s.structure.tiles} tuile(s) surélevée(s) de ${s.structure.height} niveaux à pic (bordure ${s.structure.edges.join(", ")})`
             : undefined,
+        kind:
+            s.kind.kind === "structure"
+                ? `structure (${s.kind.source === "user" ? "choix de l'utilisateur" : s.kind.reason}) : bloc rigide ${s.size}, posé entier, à une seule hauteur, sol nivelé`
+                : `nature (${s.kind.source === "user" ? "choix de l'utilisateur" : s.kind.reason}) : patchs coupables, suivent le terrain`,
         rides: s.rides.length ? s.rides : undefined,
         createdAt: s.createdAt,
     };
+}
+
+/**
+ * Plan d'un style pour l'assembler en blocs : hauteur du plus haut élément de chaque tuile au-dessus du point le
+ * plus bas du style (en niveaux, base 36 ; « . » tuile sans scénerie, espace hors du style), rangée par rangée (y),
+ * et les rangées identiques consécutives (partie répétable : crop d'une seule de ces rangées, posée N fois).
+ */
+function layoutOf(r: StyleRecord) {
+    if (r.size.x > 48 || r.size.y > 48) return undefined;
+    const vmin = Math.min(...r.surfaces.map((s) => s.baseHeight), Infinity);
+    const top = new Map<string, number>();
+    for (const e of r.elements) {
+        if (!(e.t === "small_scenery" || e.t === "wall" || e.t === "large_scenery")) continue;
+        const k = `${e.dx},${e.dy}`;
+        top.set(k, Math.max(top.get(k) ?? 0, Math.ceil((e.clearanceHeight - vmin) / 2)));
+    }
+    const inside = new Set(r.tiles.map(([x, y]) => `${x},${y}`));
+    const rows: string[] = [];
+    for (let y = 0; y < r.size.y; y++) {
+        let line = "";
+        for (let x = 0; x < r.size.x; x++) {
+            const k = `${x},${y}`;
+            line += !inside.has(k) ? " " : top.has(k) ? Math.max(0, Math.min(35, top.get(k)!)).toString(36) : ".";
+        }
+        rows.push(`y=${String(y).padStart(2)} ${line}`);
+    }
+    const repeats = repeatingBands(r).map((b) =>
+        b.axis === "y"
+            ? `rangées y=${b.from}..${b.to} identiques : répétables le long de y (crop { x1: 0, y1: ${b.from}, x2: ${r.size.x - 1}, y2: ${b.from} })`
+            : `colonnes x=${b.from}..${b.to} identiques : répétables le long de x (crop { x1: ${b.from}, y1: 0, x2: ${b.from}, y2: ${r.size.y - 1} })`,
+    );
+    return { heights: rows, repeats: repeats.length ? repeats : undefined };
 }
 
 function tilesFrom(args: { tiles?: TileXY[]; rect?: { x1: number; y1: number; x2: number; y2: number } }): TileXY[] {
@@ -287,6 +327,7 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                     origin: r.origin,
                     park: s.park,
                     rides: r.rides.map((x) => ({ name: x.name, object: x.object, classification: x.classification, colourSchemes: x.colourSchemes.slice(0, 1), vehicleColours: x.vehicleColours.slice(0, 1) })),
+                    layout: layoutOf(r),
                     screenshotError: r.screenshotError,
                     dir: store.dirOf(r.id),
                 },
@@ -305,17 +346,21 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
             description:
                 "Relève une région du parc comme style (tous les éléments, couleurs, rotations, hauteurs exactes, terrain) avec sa capture " +
                 "masquée, et la range dans la base de styles, comme le bouton « Save Style » du Style Picker en jeu. À utiliser quand " +
-                "l'utilisateur désigne une zone réussie par ses coordonnées. Exemple : { rect: { x1: 40, y1: 40, x2: 52, y2: 50 }, caption: 'pinède dense en bord de lac' }.",
+                "l'utilisateur désigne une zone réussie par ses coordonnées. kind : auto (défaut, déduit des empilements), structure " +
+                "(construction : bloc rigide posé entier), natural (nature : patchs coupables). " +
+                "Exemple : { rect: { x1: 40, y1: 40, x2: 52, y2: 50 }, caption: 'pinède dense en bord de lac' }.",
             input: {
                 tiles: zTiles.optional(),
                 rect: z.object(zRectShape).optional(),
                 caption: z.string().min(1).max(500),
+                kind: zKind.default("auto"),
             },
         },
         async (args) => {
             const tiles = tilesFrom(args);
             const rec = await ctx.bridge.call("styles.capture", { tiles, caption: args.caption, source: "claude" }, { timeoutMs: 60_000 });
-            const record = { ...rec, id: StyleStore.idFor(rec.caption, rec.id) };
+            const record: StyleRecord = { ...rec, id: StyleStore.idFor(rec.caption, rec.id) };
+            if (args.kind !== "auto") record.kind = args.kind;
             const saved = store.save(record, paths.screenshots(ctx.config));
             const s = summarize(record);
             return result({
@@ -354,6 +399,32 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
             requireStyle(id);
             store.delete(id);
             return result({ response: { summary: `Style ${id} supprimé.` }, budget: BUDGET.write });
+        },
+    );
+
+    defineTool(
+        server,
+        ctx,
+        "style_update",
+        {
+            title: "Corriger un style (nature, légende)",
+            description:
+                "Corrige un style rangé. kind : structure (construction : posée entière en bloc rigide, à une seule hauteur, sol " +
+                "nivelé, jamais éclaircie), natural (nature : patchs coupables qui suivent le terrain), auto (déduit des empilements). " +
+                "À utiliser quand l'utilisateur le demande, ou quand le classement automatique (style_list : kind) se trompe : un " +
+                "muret ou une clôture basse pris pour de la nature, des rochers empilés pris pour une construction. caption remplace la légende.",
+            input: {
+                id: z.string(),
+                kind: zKind.optional(),
+                caption: z.string().min(1).max(500).optional(),
+            },
+        },
+        async (args) => {
+            requireStyle(args.id);
+            if (!args.kind && !args.caption) toolError("INVALID_PARAMS", "Donne kind ou caption.");
+            const next = store.update(args.id, { kind: args.kind === "auto" ? null : args.kind, caption: args.caption });
+            const s = summarize(next as StyleRecord);
+            return result({ response: { summary: `Style ${args.id} corrigé.`, ...compact(s) }, budget: BUDGET.write });
         },
     );
 
@@ -439,6 +510,7 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                               "Choisis 1 à 3 styles qui correspondent à la consigne ET au voisinage (around.objects), regarde-les (style_get), puis magic_fill_apply { request, styles: [{ id, weight }] }.",
                               "previousFills : la région a déjà été remplie. Pour la refaire, magic_fill_revert { request: <ancienne> } (retour au checkpoint d'avant) puis magic_fill_apply sur la nouvelle ; ne vide pas la scénerie et n'aplanis pas à la main.",
                               "Un style sans objets n'est pas forcément vide : structure 'bâtiment en terrain' = colonnes de terrain à bords à pic avec une bordure de façade (gratte-ciel RCT1, terrain.edges). C'est un vrai bâtiment, recopié par relief + texture 'copy' : prends-le pour une ville, des immeubles, des tours. Regarde la capture (style_get) avant d'écarter un style.",
+                              "Constructions (kind 'structure' : château, tour, mur, maison en objets empilés) : posées entières en bloc rigide, à une seule hauteur, sol nivelé. Tirées au hasard, elles restent séparées les unes des autres : pour une construction reliée (tours reliées par des murs), place-les toi-même avec blocks: [{ id, x, y, rotation, crop }] (style_get : layout montre les hauteurs et les rangées répétables d'un mur), puis remplis le reste avec les styles de nature.",
                               "Le relief des styles (collines, creux : terrain.heightRange ; bâtiments : structure) est recopié par magic_fill_apply (relief: 'copy', défaut) ; relief permis dans target.bbox tant que la demande est ouverte (terrain_flatten, terrain_shape… sans session_set_landscape).",
                               "Eau : l'eau des styles (terrain.waterShare) est recopiée en mares ; pour une rivière continue, magic_fill_apply la trace (river, automatique si la consigne dit rivière/river/stream). Vérifie water.tiles dans le résultat avant de parler d'eau.",
                           ]
@@ -519,6 +591,15 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                 "Bâtiments en terrain (style_list : structure, ex. gratte-ciel RCT1 à bordure Skyscraper) : relief + texture 'copy' les " +
                 "construisent ; chaque bâtiment est posé entier ou pas du tout (jamais coupé), à sa hauteur d'origine (reliefScale ne " +
                 "s'y applique pas). Pour une ville en forêt : le style bâtiment avec un poids assez fort (ex. 3) + les styles de forêt. " +
+                "Constructions en objets (style_list : kind 'structure', ex. tour ou mur de château empilé avec Zero Clearances) : " +
+                "même règle, en BLOC RIGIDE : un niveau de base pour tout le bloc (moyenne du terrain sous son emprise), sol nivelé " +
+                "dessous (relief 'copy'), chaque pièce à sa hauteur exacte au-dessus de cette base ; density ne l'éclaircit pas. " +
+                "blocks : blocs posés à une place donnée AVANT les styles tirés au hasard, pour assembler une grande construction : " +
+                "[{ id, x, y, rotation, level?, crop? }], (x, y) = coin nord-ouest (x, y minimaux) de l'emprise après rotation et " +
+                "découpe ; crop { x1, y1, x2, y2 } en coordonnées du style garde une partie (une rangée répétable d'un mur, posée N " +
+                "fois bout à bout ; style_get : layout) ; level fixe le niveau de base (même level pour des pièces qui doivent se " +
+                "raccorder). Sans request, tiles ni rect, la région est l'emprise des blocs ; styles peut alors être vide. Un bloc " +
+                "qui ne tient pas (hors de la région, chemin, eau, autre bloc) est refusé avec la raison (structures.blocks) ; occupied 'add' pose un bloc par-dessus la scénerie existante (raccorder un mur au cœur d'une tour). " +
                 "Pose SANS contrôle de dégagement (cheat Zero Clearances activé le temps de la pose, puis rétabli). " +
                 "styles : 1 à 8 { id, weight } (poids relatifs : 3 forêt + 1 clairière). density < 1 éclaircit. occupied : skip (défaut, " +
                 "ne touche pas les tuiles déjà décorées), add (ajoute par-dessus), replace (vide la scénerie de ces tuiles d'abord, " +
@@ -539,7 +620,21 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                 request: z.string().optional(),
                 tiles: zTiles.optional(),
                 rect: z.object(zRectShape).optional(),
-                styles: z.array(z.object({ id: z.string(), weight: z.number().min(0).max(100).default(1) })).min(1).max(8),
+                styles: z.array(z.object({ id: z.string(), weight: z.number().min(0).max(100).default(1) })).max(8).default([]),
+                blocks: z
+                    .array(
+                        z.object({
+                            id: z.string(),
+                            x: z.number().int(),
+                            y: z.number().int(),
+                            rotation: z.number().int().min(0).max(3).default(0),
+                            level: z.number().int().min(1).max(254).optional().describe("Niveau de base du bloc (point le plus bas du style) ; absent : moyenne du terrain dessous."),
+                            crop: z.object(zRectShape).optional().describe("Partie du style gardée, coordonnées du style (0 = coin nord-ouest), avant rotation."),
+                        }),
+                    )
+                    .max(200)
+                    .default([])
+                    .describe("Blocs rigides posés à une place donnée avant les styles tirés au hasard."),
                 seed: z.number().int().optional(),
                 density: z.number().min(0.05).max(1).default(1),
                 rotate: z.boolean().default(true),
@@ -583,8 +678,18 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                 toolError("INVALID_PARAMS", `La demande ${req.request.id} est déjà remplie.`, {
                     hint: "Pour la refaire autrement : redo: true (retour au checkpoint d'avant remplissage, puis nouveau remplissage). Pour ajouter par-dessus : tiles ou rect, occupied: 'add'.",
                 });
-            const tiles = req ? req.request.tiles.map(([x, y]) => ({ x, y })) : tilesFrom(args);
+            if (args.styles.length === 0 && args.blocks.length === 0) toolError("INVALID_PARAMS", "Donne styles (1 à 8) ou blocks.");
             const sources = args.styles.map((s) => ({ record: requireStyle(s.id), weight: s.weight }));
+            const blocks: FillBlock[] = args.blocks.map((b) => ({ ...b, record: requireStyle(b.id) }));
+            // Sans région donnée : l'emprise des blocs.
+            const blockTiles = () => {
+                const out = new Map<string, TileXY>();
+                for (const b of blocks) for (const f of blockFootprint(b)) out.set(`${f.at.x},${f.at.y}`, f.at);
+                if (out.size === 0) toolError("INVALID_PARAMS", "Blocs sans emprise (crop hors du style).");
+                if (out.size > STYLE_MAX_TILES) toolError("INVALID_PARAMS", `Emprise des blocs trop grande (${out.size} tuiles, maximum ${STYLE_MAX_TILES}).`);
+                return [...out.values()];
+            };
+            const tiles = req ? req.request.tiles.map(([x, y]) => ({ x, y })) : !args.tiles?.length && !args.rect && blocks.length ? blockTiles() : tilesFrom(args);
             const seed = args.seed ?? Math.floor(Math.random() * 1e9);
             const before = await extract(tiles);
             // Relief : permis dans l'emprise d'une demande ouverte ou si l'utilisateur l'a accordé (SPEC 9.2).
@@ -605,6 +710,8 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                     if (texture === "copy") warnings.push("Textures du style (surface, bordure) NON recopiées : relief verrouillé, même règle.");
                     if (sources.some((s) => summarize(s.record).structure?.kind === "building"))
                         warnings.push("Bâtiments en terrain NON construits : ils sont faits de relief et de bordures, verrouillés ici.");
+                    if ([...sources.map((s) => s.record), ...blocks.map((b) => b.record)].some((r) => summarize(r).kind.kind === "structure") || blocks.length)
+                        warnings.push("Sol NON nivelé sous les constructions (relief verrouillé) : chaque bloc reste rigide à un seul niveau, mais il peut être enterré d'un côté ou décollé de l'autre sur une pente.");
                     if (water === "copy" && sources.some((s) => summarize(s.record).terrain.waterShare > 0))
                         warnings.push("Eau du style NON recopiée : relief verrouillé, même règle.");
                     if (river) warnings.push("Rivière NON tracée : relief verrouillé, même règle.");
@@ -627,6 +734,7 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                 texture,
                 water,
                 river,
+                blocks,
             });
             const planned = plan.small.length + plan.large.length + plan.walls.length;
             const reshaped = plan.terrain.length;
@@ -642,7 +750,15 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                       ? "keep"
                       : "plat (rien à recopier)",
                 textures: retextured || (texture === "keep" ? "keep" : 0),
-                buildings: plan.buildings.stamps || plan.buildings.misses ? plan.buildings : undefined,
+                structures:
+                    plan.structures.stamps || plan.structures.misses || plan.structures.blocks.length
+                        ? {
+                              stamps: plan.structures.stamps,
+                              misses: plan.structures.misses || undefined,
+                              blocks: plan.structures.blocks.length ? plan.structures.blocks.map(({ index, ...b }) => ({ block: index, ...b })) : undefined,
+                              unlevelled: plan.structures.unlevelled || undefined,
+                          }
+                        : undefined,
                 water: {
                     tiles: plan.water.length,
                     fromStyles: plan.waterInfo.fromStyles,
@@ -665,8 +781,13 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                         "AUCUNE EAU POSÉE alors que la consigne en demande : ne dis pas à l'utilisateur qu'il y a de l'eau. Relance avec redo: true et river (ou un style qui contient de l'eau).",
                     );
             }
-            if (relief === "copy" && plan.buildings.misses && !plan.buildings.stamps)
-                warnings.push("Aucun bâtiment posé : aucun emplacement libre assez grand pour un tampon entier (rivière, chemins, tuiles déjà décorées). Augmente son poids, ou occupied: 'replace'.");
+            if (plan.structures.misses && !plan.structures.stamps && sources.some((s) => summarize(s.record).kind.kind === "structure"))
+                warnings.push("Aucune construction tirée au hasard n'a été posée : aucun emplacement libre assez grand pour un bloc entier (rivière, chemins, tuiles déjà décorées). Augmente son poids, occupied: 'replace', ou place-la avec blocks.");
+            const refused = plan.structures.blocks.filter((b) => !b.placed);
+            if (refused.length)
+                warnings.push(`${refused.length} bloc(s) sur ${plan.structures.blocks.length} refusé(s) : ${refused.slice(0, 5).map((b) => `bloc ${b.index} (${b.reason})`).join(" ; ")}${refused.length > 5 ? " ; …" : ""}.`);
+            if (plan.structures.stamps > 1 && blocks.length === 0 && BUILDING_WORDS.test(prompt))
+                warnings.push(`${plan.structures.stamps} construction(s) tirée(s) au hasard : elles ne sont PAS reliées entre elles. Pour une construction d'un seul tenant (tours reliées par des murs), place les pièces avec blocks.`);
             if (BUILDING_WORDS.test(prompt) && !sources.some((s) => hasBuildings(s.record)))
                 warnings.push("La consigne demande des bâtiments, mais aucun style choisi n'en contient (style_list : structure 'bâtiment en terrain', ou objets de bâtiment) : ne dis pas à l'utilisateur qu'il y a une ville.");
             const nothing = planned === 0 && reshaped === 0 && retextured === 0 && plan.water.length === 0;
@@ -840,7 +961,7 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
             ctx.journal.record({
                 tool: "magic_fill_apply",
                 summary: `Magic Fill : ${placed} élément(s) sur ${tiles.length} tuiles${terrainOk ? `, relief sur ${terrainOk}` : ""}${textureOk ? `, texture sur ${textureOk}` : ""}${waterOk ? `, eau sur ${waterOk}` : ""}`,
-                params: { request: args.request, styles: args.styles, seed },
+                params: { request: args.request, styles: args.styles, blocks: args.blocks.length ? args.blocks : undefined, seed },
                 // Ordre inverse de la pose : petite scénerie, murs, grandes.
                 inverse: inverse.reverse(),
                 irreversible: inverse.length === 0 ? "rien de posé" : undefined,

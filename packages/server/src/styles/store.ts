@@ -9,11 +9,11 @@
 
 import { existsSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync, copyFileSync, unlinkSync } from "node:fs";
 import { join } from "node:path";
-import { slugify, type StyleElement, type StyleRecord } from "@openrct2-claude/protocol";
+import { slugify, type StyleElement, type StyleKindChoice, type StyleRecord } from "@openrct2-claude/protocol";
 import { log } from "../log.js";
 import { maskCapture, type MaskColumn } from "../render/mask.js";
 import type { CaptureView } from "../render/projection.js";
-import { terrainStructure, type TerrainStructure } from "./structure.js";
+import { styleKind, terrainStructure, type StyleKind, type TerrainStructure } from "./structure.js";
 
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,80}$/;
 
@@ -37,6 +37,8 @@ export interface StyleSummary {
     terrain: { surfaces: string[]; edges: string[]; waterShare: number; slopedShare: number; heightRange: number };
     /** Construction en terrain (colonnes à bords à pic, ex. gratte-ciel RCT1), ou null. */
     structure: TerrainStructure | null;
+    /** Construction (bloc rigide) ou nature, et d'où vient ce classement. */
+    kind: StyleKind;
     rides: string[];
     screenshots: number[];
 }
@@ -101,6 +103,7 @@ export function summarize(r: StyleRecord): StyleSummary {
             heightRange: isFinite(hMin) ? (hMax - hMin) / 2 : 0,
         },
         structure: terrainStructure(r),
+        kind: styleKind(r),
         rides: r.rides.map((x) => x.name),
         screenshots: r.screenshots.map((s) => s.rotation),
     };
@@ -241,6 +244,21 @@ export class StyleStore {
         writeFileSync(join(dir, "caption.txt"), record.caption + "\n");
         this.cache.delete(record.id);
         return { dir, screenshots: shots.length };
+    }
+
+    /** Corrige un style rangé : nature (null : redevient automatique) et légende. Les captures ne changent pas. */
+    update(id: string, patch: { kind?: StyleKindChoice | null; caption?: string }): StyleRecord | null {
+        const r = this.get(id);
+        if (!r) return null;
+        const next: StyleRecord = { ...r };
+        if (patch.kind === null) delete next.kind;
+        else if (patch.kind) next.kind = patch.kind;
+        if (patch.caption) next.caption = patch.caption;
+        const dir = this.dirOf(id);
+        writeFileSync(join(dir, "style.json"), JSON.stringify(next));
+        writeFileSync(join(dir, "caption.txt"), next.caption + "\n");
+        this.cache.delete(id);
+        return next;
     }
 
     screenshot(id: string, rotation: number): Buffer | null {

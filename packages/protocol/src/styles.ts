@@ -138,7 +138,14 @@ export interface StyleRecord {
     screenshotError?: string;
     /** Éléments fantômes (aperçus de construction) ignorés. */
     ghostsSkipped?: number;
+    /**
+     * Nature choisie par l'utilisateur (Style Picker, style_update) ; absente : déduite du relevé par le serveur.
+     * structure : bloc rigide, posé entier à une seule hauteur sur un sol nivelé ; natural : patchs coupables.
+     */
+    kind?: StyleKindChoice;
 }
+
+export type StyleKindChoice = "structure" | "natural";
 
 export interface MagicFillRequest {
     id: string;
