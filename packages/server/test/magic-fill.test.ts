@@ -9,7 +9,7 @@ import type { MagicFillRequest, StyleElement, StyleRecord } from "@openrct2-clau
 import { cornerLevels, tileFromCorners } from "../src/planners/heightmap.js";
 import { planMagicFill, type FillOptions, type FillTargetTile } from "../src/planners/magicFill.js";
 import { regionMask } from "../src/render/mask.js";
-import { relevance, summarize } from "../src/styles/store.js";
+import { columnsOf, relevance, summarize } from "../src/styles/store.js";
 import { startHarness, type Harness } from "./harness.js";
 
 const OPTS: FillOptions = { seed: 1, density: 1, rotate: false, occupied: "skip", avoidPaths: true, include: ["small_scenery", "large_scenery", "wall"], matchWater: true };
@@ -34,6 +34,13 @@ function style(id: string, w: number, h: number, elements: Partial<StyleElement>
         screenshots: [],
         ...extra,
     };
+}
+
+/** Gratte-ciel RCT1 comme le Style Picker le relève : 4×4, colonne 2×2 au centre 16 niveaux plus haut, bordure Skyscraper, aucun objet. */
+function tower(id: string, edge = "rct1ll.terrain_edge.skyscraper_b", name = "Skyscraper (B)"): StyleRecord {
+    const s = style(id, 4, 4, [], { objects: { [edge]: { type: "terrain_edge", name } } });
+    s.surfaces = s.surfaces.map((t) => ({ ...t, edge, baseHeight: t.dx >= 1 && t.dx <= 2 && t.dy >= 1 && t.dy <= 2 ? 46 : 14 }));
+    return s;
 }
 
 function target(w: number, h: number, base = 20): FillTargetTile[] {
@@ -294,6 +301,32 @@ describe("planificateur Magic Fill", () => {
         expect(flat.waterInfo.leaked).toBeGreaterThan(0);
     });
 
+    it("bâtiment en terrain (gratte-ciel RCT1) : tamponné entier, jamais coupé ni changé en colline, à l'échelle 1", () => {
+        const forest = style("forest", 3, 3, [{ object: "pine", dx: 1, dy: 1 }]);
+        for (const seed of [1, 2, 3, 4, 5]) {
+            const plan = planMagicFill(target(30, 30), [{ record: tower("t"), weight: 3 }, { record: forest, weight: 1 }], {
+                ...OPTS,
+                seed,
+                rotate: true,
+                relief: "copy",
+                texture: "copy",
+                reliefScale: 2,
+            });
+            expect(plan.buildings.stamps).toBeGreaterThan(0);
+            expect(plan.relief.invalid).toBe(0);
+            // Sol cible au niveau 10 ; tours à 10 + 16. Rien entre les deux : ni colline ni rampe autour d'une tour coupée.
+            for (const a of plan.terrain) expect([10, 26]).toContain(a.level);
+            const tops = plan.terrain.filter((a) => a.level === 26);
+            expect(tops.length).toBe(plan.buildings.stamps * 4);
+            const top = new Set(tops.map((a) => `${a.x},${a.y}`));
+            for (const a of tops) {
+                const n = [[1, 0], [-1, 0], [0, 1], [0, -1]].filter(([dx, dy]) => top.has(`${a.x + dx},${a.y + dy}`)).length;
+                expect(n).toBe(2);
+            }
+            expect(plan.textures.some((x) => x.edge === "rct1ll.terrain_edge.skyscraper_b")).toBe(true);
+        }
+    });
+
     it("compte ce qu'il ne pose pas (chemins, pistes)", () => {
         const s = style("a", 1, 1, [{ t: "footpath", object: "tarmac" }, { t: "track", object: null }]);
         const plan = planMagicFill(target(1, 1), [{ record: s, weight: 1 }], OPTS);
@@ -310,6 +343,16 @@ describe("base de styles", () => {
         expect(sum.topObjects[0]).toMatchObject({ id: "pine", n: 2 });
         expect(sum.stacked).toBe(1);
         expect(sum.maxDz).toBe(6);
+    });
+    it("résumé : bordures et bâtiment en terrain (style sans objets), falaise naturelle, petit relief ignoré", () => {
+        const sum = summarize(tower("t"));
+        expect(sum.density).toBe(0);
+        expect(sum.terrain.edges).toEqual(["rct1ll.terrain_edge.skyscraper_b"]);
+        expect(sum.structure).toEqual({ kind: "building", tiles: 4, height: 16, edges: ["rct1ll.terrain_edge.skyscraper_b"] });
+        expect(summarize(tower("r", "rct2.terrain_edge.rock", "Rock")).structure?.kind).toBe("cliff");
+        const low = style("low", 5, 5, [{}]);
+        low.surfaces = low.surfaces.map((t) => (t.dx >= 1 && t.dx <= 3 && t.dy >= 1 && t.dy <= 3 ? { ...t, baseHeight: 20 } : t));
+        expect(summarize(low).structure).toBeNull();
     });
     it("pertinence : légende et noms d'objets, pluriels tolérés", () => {
         const s = style("x", 1, 1, []);
@@ -329,6 +372,12 @@ describe("masque des captures", () => {
         expect(at(200, 150 - 60)).toBe(1);
         expect(at(10, 10)).toBe(0);
         expect(at(390, 290)).toBe(0);
+    });
+    it("une colonne de terrain garde sa face jusqu'au sol de la voisine (avant : seul le toit restait)", () => {
+        const cols = columnsOf(tower("t"));
+        const top = cols.find((c) => c.x === 11 && c.y === 11)!;
+        expect(top.zLow).toBe(14 * 8);
+        expect(top.zHigh).toBe(46 * 8 + 32);
     });
 });
 

@@ -33,8 +33,15 @@
 //
 // Placement des tampons : parmi quelques tirages (style, tuile, rotation), on garde celui qui couvre le plus de
 // tuiles libres, pour que les bosquets et les collines du style tombent entiers dans la région.
+//
+// Bâtiments en terrain (colonnes à bords à pic avec une bordure de façade, gratte-ciel RCT1 : styles/structure.ts) :
+// un tampon coupé collerait la colonne au tampon voisin, qui monterait en colline jusqu'au toit, ou la ferait
+// descendre en rampe vers un bord fixé. Un tel style n'est donc tamponné qu'entier, sur des tuiles libres, sèches et
+// remodelables ; sinon le tirage est écarté (et, si seuls des bâtiments ont été tirés, on retire parmi les autres
+// styles). Son relief est recopié à l'échelle 1 (reliefScale ne vaut que pour le relief naturel).
 
 import { MAX_LEVEL, MIN_LEVEL, rotateOffset, type StyleElement, type StyleRecord, type TerrainHeightItem, type TileXY } from "@openrct2-claude/protocol";
+import { terrainStructure } from "../styles/structure.js";
 import { CORNERS, cornerLevels, tileFromCorners } from "./heightmap.js";
 
 export type FillType = "small_scenery" | "large_scenery" | "wall";
@@ -151,6 +158,8 @@ export interface FillPlan {
     terrainBefore: TerrainHeightItem[];
     /** cliffs : bords de tuile en falaise après remodelage ; invalid : tuiles laissées telles quelles (forme impossible). */
     relief: { tiles: number; maxRise: number; cliffs: number; invalid: number };
+    /** Bâtiments en terrain : tampons posés entiers, et tirages écartés faute de place entière. */
+    buildings: { stamps: number; misses: number };
     /** Textures recopiées (texture: "copy"), et l'état d'avant. */
     textures: FillTexture[];
     texturesBefore: FillTexture[];
@@ -186,6 +195,8 @@ interface Prepared {
     byTile: Map<string, StyleElement[]>;
     large: { origin: { dx: number; dy: number; baseHeight: number }; object: string; direction: number; colours: [number, number, number]; footprint: [number, number][] }[];
     record: StyleRecord;
+    /** Bâtiment en terrain (terrainStructure) : tamponné entier ou pas du tout, à l'échelle 1. */
+    atomic: boolean;
 }
 
 const key = (x: number, y: number) => `${x},${y}`;
@@ -234,7 +245,8 @@ function prepare(src: FillSource, notPlaced: Record<string, number>): Prepared {
             notPlaced[e.t] = (notPlaced[e.t] ?? 0) + 1;
         }
     }
-    return { id: r.id, weight: Math.max(0, src.weight), tiles: r.tiles, water, surface, corners, vmin, byTile, large: [...large.values()], record: r };
+    const atomic = terrainStructure(r)?.kind === "building";
+    return { id: r.id, weight: Math.max(0, src.weight), tiles: r.tiles, water, surface, corners, vmin, byTile, large: [...large.values()], record: r, atomic };
 }
 
 function pickWeighted<T extends { weight: number }>(items: T[], rnd: () => number): T {
@@ -303,7 +315,7 @@ function copyRelief(
             sc[n][i] = v;
             // Coin touchant une tuile non remodelée (bord, chemin, eau, scénerie gardée) : fixé.
             pin[n][i] = !CORNERS.every((q) => index.has(key(T.x - q.dx, T.y - q.dy)));
-            c[n][i] = pin[n][i] || v === undefined ? ex[n][i] : ex[n][i] + Math.round((v - st.s.vmin) * scale);
+            c[n][i] = pin[n][i] || v === undefined ? ex[n][i] : ex[n][i] + Math.round((v - st.s.vmin) * (st.s.atomic ? 1 : scale));
             const vk = key(T.x, T.y);
             const list = byVertex.get(vk) ?? [];
             list.push([n, i]);
@@ -547,6 +559,7 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
         terrain: [],
         terrainBefore: [],
         relief: { tiles: 0, maxRise: 0, cliffs: 0, invalid: 0 },
+        buildings: { stamps: 0, misses: 0 },
         textures: [],
         texturesBefore: [],
         water: [],
@@ -590,18 +603,48 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
         const o = rotateOffset({ x: q[0] - p[0], y: q[1] - p[1] }, k);
         return { x: u.x + o.x, y: u.y + o.y };
     };
+    /** Toutes les tuiles du style tombent sur des tuiles libres, d'accord pour l'eau, et remodelables (voir copyRelief). */
+    const wholeFits = (s: Prepared, p: [number, number], k: number, u: TileXY): boolean =>
+        s.tiles.every((q) => {
+            const m = mapTile(p, u, k, q);
+            const tk = key(m.x, m.y);
+            const t = tgt.get(tk);
+            if (!t || !free.has(tk) || assigned.has(tk) || river.has(tk)) return false;
+            const styleWater = s.water.get(key(q[0], q[1])) ?? false;
+            if (!fits(styleWater, t) || (!styleWater && isWater(t))) return false;
+            return !t.blocked && !(t.occupied && opts.occupied !== "replace");
+        });
     for (const uk of order) {
         if (assigned.has(uk) || !free.has(uk)) continue;
         const u = tgt.get(uk)!;
         // Parmi quelques tirages valides, celui qui couvre le plus de tuiles libres (patch le moins coupé).
         let chosen: { s: Prepared; p: [number, number]; k: number } | null = null;
         let best = -1;
+        let pool = styles;
+        let waterRejected = false;
         for (let attempt = 0, valid = 0; attempt < 12 && valid < 6; attempt++) {
-            const s = pickWeighted(styles, rnd);
+            const s = pickWeighted(pool, rnd);
             const p = s.tiles[Math.floor(rnd() * s.tiles.length)];
-            if (!fits(s.water.get(key(p[0], p[1])) ?? false, u)) continue;
-            valid++;
+            if (!fits(s.water.get(key(p[0], p[1])) ?? false, u)) {
+                waterRejected = true;
+                continue;
+            }
             const k = opts.rotate ? Math.floor(rnd() * 4) : 0;
+            // Bâtiment : entier, sinon tirage écarté ; si seuls des bâtiments sortent, on retire parmi les autres styles.
+            if (s.atomic) {
+                if (!wholeFits(s, p, k, u)) {
+                    plan.buildings.misses++;
+                    if (attempt >= 5 && !chosen) {
+                        const rest = styles.filter((x) => !x.atomic);
+                        if (rest.length && pool !== rest) pool = rest;
+                    }
+                    continue;
+                }
+                // Entier : tirage parfait (la couverture favoriserait sinon toujours les grands patchs de forêt).
+                chosen = { s, p, k };
+                break;
+            }
+            valid++;
             let cover = 0;
             for (const q of s.tiles) {
                 const m = mapTile(p, u, k, q);
@@ -614,13 +657,15 @@ export function planMagicFill(target: FillTargetTile[], sources: FillSource[], o
             }
         }
         if (!chosen) {
-            plan.tiles.waterMismatch++;
+            // Sinon : seuls des bâtiments sans place entière ont été tirés ; la tuile reste vide (tiles.empty).
+            if (waterRejected) plan.tiles.waterMismatch++;
             free.delete(uk);
             continue;
         }
         const stamp = stamps.length;
         stamps.push({ s: chosen.s, p: chosen.p, u, k: chosen.k, ground: Math.min(...cornerLevels({ h: u.baseHeight / 2, s: u.slope })) });
         plan.stamps[chosen.s.id] = (plan.stamps[chosen.s.id] ?? 0) + 1;
+        if (chosen.s.atomic) plan.buildings.stamps++;
         for (const q of chosen.s.tiles) {
             const t = mapTile(chosen.p, u, chosen.k, q);
             const tk = key(t.x, t.y);

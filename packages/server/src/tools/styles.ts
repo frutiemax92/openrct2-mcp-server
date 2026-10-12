@@ -27,7 +27,14 @@ const zTiles = z.array(zTile).max(STYLE_MAX_TILES);
 
 /** Consigne qui demande un cours d'eau (rivière tracée par défaut), ou de l'eau en général (contrôle du résultat). */
 const RIVER_WORDS = /\b(rivers?|streams?|creeks?|brooks?|canals?|rivi[eè]res?|ruisseaux?|fleuves?|torrents?|cours d'eau)\b/i;
-const WATER_WORDS = /\b(water|lakes?|ponds?|pools?|eau|lacs?|[ée]tangs?|mares?|bassins?)\b/i;
+const BUILDING_WORDS = /\b(city|town|village|buildings?|skyscrapers?|towers?|houses?|ville|villages?|b[aâ]timents?|immeubles?|gratte-ciels?|tours?|maisons?)\b/i;
+const WATER_WORDS =/\b(water|lakes?|ponds?|pools?|eau|lacs?|[ée]tangs?|mares?|bassins?)\b/i;
+
+/** Le style contient des bâtiments : en terrain (structure) ou en objets (petite/grande scénerie, murs). */
+function hasBuildings(r: StyleRecord): boolean {
+    if (summarize(r).structure?.kind === "building") return true;
+    return r.elements.some((e) => e.object && e.t !== "footpath" && BUILDING_WORDS.test(r.objects[e.object]?.name ?? ""));
+}
 
 function compact(s: StyleSummary) {
     return {
@@ -40,6 +47,9 @@ function compact(s: StyleSummary) {
         maxDz: s.maxDz,
         stacked: s.stacked,
         terrain: s.terrain,
+        structure: s.structure
+            ? `${s.structure.kind === "building" ? "bâtiment en terrain" : "falaise"} : ${s.structure.tiles} tuile(s) surélevée(s) de ${s.structure.height} niveaux à pic (bordure ${s.structure.edges.join(", ")})`
+            : undefined,
         rides: s.rides.length ? s.rides : undefined,
         createdAt: s.createdAt,
     };
@@ -428,7 +438,8 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                         ? [
                               "Choisis 1 à 3 styles qui correspondent à la consigne ET au voisinage (around.objects), regarde-les (style_get), puis magic_fill_apply { request, styles: [{ id, weight }] }.",
                               "previousFills : la région a déjà été remplie. Pour la refaire, magic_fill_revert { request: <ancienne> } (retour au checkpoint d'avant) puis magic_fill_apply sur la nouvelle ; ne vide pas la scénerie et n'aplanis pas à la main.",
-                              "Le relief des styles (collines, creux : terrain.heightRange) est recopié par magic_fill_apply (relief: 'copy', défaut) ; relief permis dans target.bbox tant que la demande est ouverte (terrain_flatten, terrain_shape… sans session_set_landscape).",
+                              "Un style sans objets n'est pas forcément vide : structure 'bâtiment en terrain' = colonnes de terrain à bords à pic avec une bordure de façade (gratte-ciel RCT1, terrain.edges). C'est un vrai bâtiment, recopié par relief + texture 'copy' : prends-le pour une ville, des immeubles, des tours. Regarde la capture (style_get) avant d'écarter un style.",
+                              "Le relief des styles (collines, creux : terrain.heightRange ; bâtiments : structure) est recopié par magic_fill_apply (relief: 'copy', défaut) ; relief permis dans target.bbox tant que la demande est ouverte (terrain_flatten, terrain_shape… sans session_set_landscape).",
                               "Eau : l'eau des styles (terrain.waterShare) est recopiée en mares ; pour une rivière continue, magic_fill_apply la trace (river, automatique si la consigne dit rivière/river/stream). Vérifie water.tiles dans le résultat avant de parler d'eau.",
                           ]
                         : ["L'utilisateur peint une région avec le Magic Fill Tool (menu des plugins) ; magic_fill_requests { wait: 120 } attend la suivante."],
@@ -505,6 +516,9 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                 "reliefScale multiplie la hauteur de ce relief (2 : collines deux fois plus hautes). " +
                 "relief: 'keep' laisse le terrain tel quel. texture: 'copy' (défaut, même permission que le relief) recopie la " +
                 "surface (herbe, roche…) et la bordure (falaises) de chaque tuile du style ; 'keep' les laisse. " +
+                "Bâtiments en terrain (style_list : structure, ex. gratte-ciel RCT1 à bordure Skyscraper) : relief + texture 'copy' les " +
+                "construisent ; chaque bâtiment est posé entier ou pas du tout (jamais coupé), à sa hauteur d'origine (reliefScale ne " +
+                "s'y applique pas). Pour une ville en forêt : le style bâtiment avec un poids assez fort (ex. 3) + les styles de forêt. " +
                 "Pose SANS contrôle de dégagement (cheat Zero Clearances activé le temps de la pose, puis rétabli). " +
                 "styles : 1 à 8 { id, weight } (poids relatifs : 3 forêt + 1 clairière). density < 1 éclaircit. occupied : skip (défaut, " +
                 "ne touche pas les tuiles déjà décorées), add (ajoute par-dessus), replace (vide la scénerie de ces tuiles d'abord, " +
@@ -589,6 +603,8 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                     if (relief === "copy" && sources.some((s) => summarize(s.record).terrain.heightRange > 0))
                         warnings.push("Relief du style NON recopié : relief verrouillé hors d'une demande Magic Fill ouverte (session_set_landscape si l'utilisateur l'accepte).");
                     if (texture === "copy") warnings.push("Textures du style (surface, bordure) NON recopiées : relief verrouillé, même règle.");
+                    if (sources.some((s) => summarize(s.record).structure?.kind === "building"))
+                        warnings.push("Bâtiments en terrain NON construits : ils sont faits de relief et de bordures, verrouillés ici.");
                     if (water === "copy" && sources.some((s) => summarize(s.record).terrain.waterShare > 0))
                         warnings.push("Eau du style NON recopiée : relief verrouillé, même règle.");
                     if (river) warnings.push("Rivière NON tracée : relief verrouillé, même règle.");
@@ -626,6 +642,7 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                       ? "keep"
                       : "plat (rien à recopier)",
                 textures: retextured || (texture === "keep" ? "keep" : 0),
+                buildings: plan.buildings.stamps || plan.buildings.misses ? plan.buildings : undefined,
                 water: {
                     tiles: plan.water.length,
                     fromStyles: plan.waterInfo.fromStyles,
@@ -648,6 +665,10 @@ export function registerStyleTools(server: McpServer, ctx: ToolContext): { store
                         "AUCUNE EAU POSÉE alors que la consigne en demande : ne dis pas à l'utilisateur qu'il y a de l'eau. Relance avec redo: true et river (ou un style qui contient de l'eau).",
                     );
             }
+            if (relief === "copy" && plan.buildings.misses && !plan.buildings.stamps)
+                warnings.push("Aucun bâtiment posé : aucun emplacement libre assez grand pour un tampon entier (rivière, chemins, tuiles déjà décorées). Augmente son poids, ou occupied: 'replace'.");
+            if (BUILDING_WORDS.test(prompt) && !sources.some((s) => hasBuildings(s.record)))
+                warnings.push("La consigne demande des bâtiments, mais aucun style choisi n'en contient (style_list : structure 'bâtiment en terrain', ou objets de bâtiment) : ne dis pas à l'utilisateur qu'il y a une ville.");
             const nothing = planned === 0 && reshaped === 0 && retextured === 0 && plan.water.length === 0;
             if (args.dryRun || nothing) {
                 return result({

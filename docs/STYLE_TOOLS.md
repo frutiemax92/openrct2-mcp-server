@@ -132,6 +132,22 @@ Correction :
 - Pose : relief, textures, puis eau (`terrain.set_water` par segments de ligne au même niveau), puis scénerie. L'inverse retire l'eau avant de remettre le terrain.
 - Résultat : bloc `water { tiles, fromStyles, river { tiles, level, bedLevel, path }, leaked }`, `changed.water`, et le résumé dit « Eau posée sur N tuile(s) » ou « Aucune eau posée ». Si la consigne parle d'eau et qu'aucune n'est posée : avertissement `AUCUNE EAU POSÉE … ne dis pas à l'utilisateur qu'il y a de l'eau`. `magic_fill_requests` le rappelle dans ses hints.
 
+### 3.3 Bâtiments en terrain [DÉCISION, 12 octobre 2026]
+
+Constat du 12 octobre : consigne « A city with tall buildings, in a dense forest with some hills and a river ». Deux styles « A tall building » étaient candidats. Ce sont des gratte-ciel à la RCT1 : un patch 4×4 dont la colonne 2×2 du centre est 16 niveaux plus haut que le reste, avec la bordure `rct1ll.terrain_edge.skyscraper_a/b`, et **aucun objet**. Claude (Haiku) les a écartés : le résumé montrait `objects: []`, `density: 0` et un `heightRange` de 16, présenté par les hints comme « collines, creux ». Résultat : une forêt sans ville. Trois autres défauts seraient apparus même en les choisissant :
+
+1. Le résumé ne donnait pas les bordures : rien ne distinguait un immeuble d'une colline.
+2. Un tampon de tour coupé (bord de la région, rivière, tuile prise par un autre tampon) collait la colonne au voisin. L'étape « coutures » de `copyRelief` faisait alors monter le voisin jusqu'au toit, ce qui donnait une colline de 16 niveaux, ou une rampe vers un bord fixé.
+3. La capture masquée effaçait la face de la tour : la colonne de masque d'une tuile allait de son propre sol à son sommet, alors que la falaise est dessinée jusqu'au sol de la voisine. Il ne restait que le toit, qui semblait flotter.
+
+Correction :
+
+- `styles/structure.ts` : `terrainStructure` relève les tuiles plus hautes qu'une voisine du style d'au moins 4 niveaux sur tout un bord (les deux coins). La construction est `building` si la bordure de ces tuiles figure une façade (skyscraper, brick, iron, wood, glass…, d'après l'identifiant ou le nom), sinon `cliff`.
+- Résumé (`style_list`, `style_get`, candidats de `magic_fill_requests`) : `terrain.edges` et `structure`, ex. « bâtiment en terrain : 4 tuile(s) surélevée(s) de 16 niveaux à pic (bordure rct1ll.terrain_edge.skyscraper_b) ». Les hints disent qu'un style sans objets n'est pas forcément vide.
+- Planificateur : un style `building` n'est tamponné qu'entier, sur des tuiles libres, sèches, hors rivière et remodelables. Sinon le tirage est écarté et, si seuls des bâtiments sortent, on retire parmi les autres styles. Son relief est recopié à l'échelle 1 (`reliefScale` ne vaut que pour le relief naturel).
+- Résultat : `buildings { stamps, misses }`. Avertissements : aucun bâtiment posé faute de place ; consigne qui demande des bâtiments (city, town, building, tower, ville, immeuble…) sans aucun style qui en contienne ; bâtiments non construits quand le relief est verrouillé.
+- Masque (`columnsOf`) : chaque colonne descend jusqu'au sol de sa voisine la plus basse dans le style. Les captures déjà enregistrées gardent l'ancien masque : il faut annoter le style de nouveau pour le corriger.
+
 ---
 
 ## 4. Remplissage (`planners/magicFill.ts`)

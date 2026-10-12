@@ -13,6 +13,7 @@ import { slugify, type StyleElement, type StyleRecord } from "@openrct2-claude/p
 import { log } from "../log.js";
 import { maskCapture, type MaskColumn } from "../render/mask.js";
 import type { CaptureView } from "../render/projection.js";
+import { terrainStructure, type TerrainStructure } from "./structure.js";
 
 const SAFE_ID = /^[a-z0-9][a-z0-9-]{0,80}$/;
 
@@ -32,7 +33,10 @@ export interface StyleSummary {
     /** Empilement : hauteur relative maximale (baseHeight) et éléments au-dessus d'un autre sur la même tuile. */
     maxDz: number;
     stacked: number;
-    terrain: { surfaces: string[]; waterShare: number; slopedShare: number; heightRange: number };
+    /** edges : bordures (falaises) les plus présentes. */
+    terrain: { surfaces: string[]; edges: string[]; waterShare: number; slopedShare: number; heightRange: number };
+    /** Construction en terrain (colonnes à bords à pic, ex. gratte-ciel RCT1), ou null. */
+    structure: TerrainStructure | null;
     rides: string[];
     screenshots: number[];
 }
@@ -59,12 +63,14 @@ export function summarize(r: StyleRecord): StyleSummary {
         perTile.set(k, n + 1);
     }
     const surf = new Map<string, number>();
+    const edges = new Map<string, number>();
     let water = 0;
     let sloped = 0;
     let hMin = Infinity;
     let hMax = -Infinity;
     for (const s of r.surfaces) {
         if (s.surface) surf.set(s.surface, (surf.get(s.surface) ?? 0) + 1);
+        if (s.edge) edges.set(s.edge, (edges.get(s.edge) ?? 0) + 1);
         if (s.water > s.baseHeight) water++;
         if (s.slope & 0x1f) sloped++;
         hMin = Math.min(hMin, s.baseHeight);
@@ -89,10 +95,12 @@ export function summarize(r: StyleRecord): StyleSummary {
         stacked,
         terrain: {
             surfaces: [...surf.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([id]) => id),
+            edges: [...edges.entries()].sort((a, b) => b[1] - a[1]).slice(0, 2).map(([id]) => id),
             waterShare: Math.round((water / n) * 100) / 100,
             slopedShare: Math.round((sloped / n) * 100) / 100,
             heightRange: isFinite(hMin) ? (hMax - hMin) / 2 : 0,
         },
+        structure: terrainStructure(r),
         rides: r.rides.map((x) => x.name),
         screenshots: r.screenshots.map((s) => s.rotation),
     };
@@ -102,10 +110,20 @@ export function summarize(r: StyleRecord): StyleSummary {
 export function columnsOf(r: { origin: { x: number; y: number }; tiles: [number, number][]; surfaces: StyleRecord["surfaces"]; elements: StyleElement[] }): MaskColumn[] {
     const cols = new Map<string, MaskColumn>();
     for (const [dx, dy] of r.tiles) cols.set(`${dx},${dy}`, { x: r.origin.x + dx, y: r.origin.y + dy, zLow: Infinity, zHigh: 0 });
+    const ground = new Map(r.surfaces.map((s) => [`${s.dx},${s.dy}`, s.baseHeight]));
     for (const s of r.surfaces) {
         const c = cols.get(`${s.dx},${s.dy}`);
         if (!c) continue;
-        c.zLow = Math.min(c.zLow, s.baseHeight * 8);
+        // La face d'une falaise (colonne de terrain, gratte-ciel RCT1) descend jusqu'au sol de la voisine la plus basse.
+        let low = s.baseHeight;
+        for (const [dx, dy] of [
+            [1, 0],
+            [-1, 0],
+            [0, 1],
+            [0, -1],
+        ])
+            low = Math.min(low, ground.get(`${s.dx + dx},${s.dy + dy}`) ?? low);
+        c.zLow = Math.min(c.zLow, low * 8);
         c.zHigh = Math.max(c.zHigh, s.baseHeight * 8 + 32, s.water * 8);
     }
     for (const e of r.elements) {
